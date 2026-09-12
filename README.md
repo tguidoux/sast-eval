@@ -158,6 +158,45 @@ uv run python -m sast_eval.scoring.metrics --matched results/matched/<tool>/ \
 ```
 </details>
 
+## Programmatic API
+
+For automation or running a SAST tool + agent in a sandbox, use the Python API
+(`sast_eval.api`). It reuses the exact same code paths as the CLI, so behavior
+is identical — just scriptable.
+
+```python
+from sast_eval import SastEval
+
+# Same defaults as the CLI; customize benchmark/limit/paths here.
+sast = SastEval(benchmark="owasp", limit=20)
+sast.prepare()                       # download + build + fetch + package
+
+with sast.results("mytool") as run:
+    for cb in sast.codebases():      # iterate per-task .tar.gz tarballs
+        # Stream the tarball to a sandbox dir (64KB chunks, low memory).
+        tar = cb.download("/tmp/sandbox")
+        # ...run your SAST tool on `tar` (or cb.download(dest, extract=True))
+        #    and produce SARIF v2.1.0...
+        run.save_sarif(sarif, cb.task_id)
+    run.match()                      # classify TP/FP/FN against ground truth
+    run.exploit()                    # 4-tier exploit-validation oracle
+    run.score()                      # render scorecard -> run.scorecard_path
+```
+
+- `SastEval(benchmark=, limit=, corpus=, tasks=, imported=, results=, reports=, codebases_dir=)`
+  mirrors the CLI flags. `prepare()`, `build()`, `fetch()`, `package()` call
+  the same `cmd_*` functions the CLI uses.
+- `SastEval.codebases()` yields `Codebase` objects (`task_id`, `benchmark`,
+  `bytes`, `file_count`, `ground_truth`) read from `codebases/MANIFEST.json`.
+- `Codebase.download(dest_dir, extract=False)` streams the tarball — designed
+  for shipping the codebase to an external sandbox, scanning it there, and
+  piping the SARIF back via `run.save_sarif(...)`.
+- `ResultRun.save_sarif(sarif, task_id)` accepts a dict, a JSON string, or a
+  `Path` to a `.sarif` file.
+
+See [`test/test_api.py`](test/test_api.py) for a runnable end-to-end example
+(`make test`).
+
 ## Notes
 
 - **OWASP** (`sast_eval/adapters/owasp_adapter.py`): the only end-to-end adapter.

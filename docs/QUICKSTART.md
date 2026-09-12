@@ -319,7 +319,42 @@ individually so you can inspect each stage's output.
 
 ## 7. Use as a Python library
 
-Every CLI subcommand maps to a module `main(argv)` you can call directly:
+The high-level API (`sast_eval.api`) mirrors the CLI and reuses the same code
+paths — ideal for automation or running a SAST tool + agent in a sandbox:
+
+```python
+from sast_eval import SastEval
+
+# Same defaults as the CLI; customize benchmark/limit/paths here.
+sast = SastEval(benchmark="owasp", limit=20)
+sast.prepare()                       # download + build + fetch + package
+
+with sast.results("mytool") as run:
+    for cb in sast.codebases():       # iterate per-task .tar.gz tarballs
+        # Stream the tarball to a sandbox dir (64KB chunks, low memory).
+        tar = cb.download("/tmp/sandbox")
+        # ...run your SAST tool on `tar` (or cb.download(dest, extract=True))
+        #    and produce SARIF v2.1.0...
+        run.save_sarif(sarif, cb.task_id)
+    run.match(); run.exploit(); run.score()
+    print("scorecard:", run.scorecard_path)
+```
+
+- `SastEval.codebases()` yields `Codebase` objects with `task_id`,
+  `benchmark`, `bytes`, `file_count`, and `ground_truth`, read from
+  `codebases/MANIFEST.json` and filtered by `benchmark`/`limit`.
+- `Codebase.download(dest_dir, extract=False)` **streams** the tarball —
+  designed for shipping the codebase to an external sandbox, scanning it
+  there, and piping the SARIF back via `run.save_sarif(...)`.
+- `ResultRun.save_sarif(sarif, task_id)` accepts a dict, a JSON string, or a
+  `Path` to a `.sarif` file.
+
+A runnable end-to-end example lives at
+[`test/test_api.py`](../test/test_api.py) (`make test`).
+
+### Lower-level: call the module mains directly
+
+Every CLI subcommand also maps to a module `main(argv)` you can call directly:
 
 ```python
 from sast_eval.matching.matcher import main as match_main

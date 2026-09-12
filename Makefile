@@ -51,10 +51,13 @@ ALL ?=
 # Default: prepare all codebases (download + build + fetch + package).
 .DEFAULT_GOAL := prepare
 
-.PHONY: setup prepare fetch build build-owasp build-bountytasks build-cwebench build-cybergym build-sastbench package dist match exploit score all clean
+.PHONY: setup prepare fetch build build-owasp build-bountytasks build-cwebench build-cybergym build-sastbench package dist test match exploit score all clean
 
 setup:
 	uv sync
+
+test:
+	$(PY) test/test_api.py
 
 prepare:
 	$(CLI) prepare \

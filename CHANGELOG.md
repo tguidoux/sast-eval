@@ -5,6 +5,47 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.4] - 2026-09-12
+
+### Added
+
+- **Programmatic Python API** — `from sast_eval import SastEval, Codebase,
+  ResultRun` lets you drive the whole pipeline from code instead of the CLI,
+  reusing the exact same code paths (so behavior is identical to `sast-eval`).
+  ```python
+  from sast_eval import SastEval
+  sast = SastEval(benchmark="owasp", limit=20)   # same defaults as the CLI
+  sast.prepare()                                # download + build + fetch + package
+  with sast.results("mytool") as run:
+      for cb in sast.codebases():                # iterate per-task tarballs
+          tar = cb.download("/tmp/sandbox")      # stream the .tar.gz (64KB chunks)
+          run.save_sarif(my_sast(tar), cb.task_id)
+      run.match(); run.exploit(); run.score()
+  ```
+  - `SastEval(benchmark=, limit=, corpus=, tasks=, imported=, results=, reports=,
+    codebases_dir=)` — config object mirroring the CLI flags; `prepare()`,
+    `build()`, `fetch()`, `package()` call the same `cmd_*` functions the CLI
+    uses.
+  - `SastEval.codebases()` — iterator over packaged per-task tarballs (reads
+    `codebases/MANIFEST.json`), filtered by `benchmark`/`limit`, yielding
+    `Codebase` objects with `task_id`, `benchmark`, `bytes`, `file_count`, and
+    `ground_truth`.
+  - `Codebase.download(dest_dir, extract=False)` — **streams** the tarball to a
+    sandbox directory in 64KB chunks (low memory for 200MB tarballs); pass
+    `extract=True` to also extract it. Designed for running a SAST tool + agent
+    in an external sandbox: download there, scan, ship the SARIF back.
+  - `SastEval.results(tool)` — context manager yielding a `ResultRun` with
+    `save_sarif(sarif, task_id)` (accepts a dict, JSON string, or `Path`),
+    `match()`, `exploit()`, `score()`, and `scorecard_path`.
+- `test/test_api.py` — lightweight end-to-end API test (no network; uses a
+  prepared OWASP corpus, fake SARIF, throwaway result dirs). Run with
+  `make test` or `uv run python test/test_api.py`.
+
+### Changed
+
+- `sast_eval/__init__.py` now exports `SastEval`, `Codebase`, `ResultRun` and
+  documents the programmatic API in the module docstring.
+
 ## [0.1.3] - 2026-09-12
 
 ### Added
