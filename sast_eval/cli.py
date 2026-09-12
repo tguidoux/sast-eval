@@ -2,13 +2,14 @@
 
 Subcommands map to the existing module mains (each accepts ``argv: list[str]``):
 
+    sast-eval download   download benchmark corpora into corpus/ (Step 1)
     sast-eval build       build all 5 benchmarks' tasks (tasks/*.jsonl)
     sast-eval fetch       fetch source for bountytasks/CWE-Bench/CyberGym/SASTbench
     sast-eval package     build per-task .tar.gz codebases for SAST analysis
     sast-eval match       match SARIF results against ground truth
     sast-eval exploit     run exploit-validation oracles on matched results
     sast-eval score       render the scorecard from matched + exploit results
-    sast-eval all         build + fetch + package + match + exploit + score
+    sast-eval all         download + build + fetch + package + match + exploit + score
 
 Run ``sast-eval <subcommand> --help`` for per-subcommand options.
 """
@@ -46,26 +47,58 @@ def _add_corpus_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--codebases", default=CODEBASES, help="Codebases dir (default: codebases)")
 
 
+def cmd_download(args: argparse.Namespace) -> int:
+    argv = ["--corpus", args.corpus]
+    if args.benchmark:
+        argv += ["--benchmark", args.benchmark]
+    if args.full:
+        argv += ["--full"]
+    if args.force:
+        argv += ["--force"]
+    if args.cybergym_limit is not None:
+        argv += ["--cybergym-limit", str(args.cybergym_limit)]
+    return _run("sast_eval.tools.download_corpus", "main", argv)
+
+
+def _build_one(module: str, func: str, argv: list[str], benchmark: str, corpus_dir: Path) -> int:
+    """Run one benchmark's build step, skipping gracefully if its corpus is missing.
+
+    This lets ``sast-eval build`` compose with selective ``sast-eval download``:
+    if you only downloaded some benchmarks, build only those and warn about the
+    rest instead of crashing on a missing CSV/file.
+    """
+    if not corpus_dir.is_dir():
+        print(f"  skip {benchmark}: {corpus_dir} not present "
+              f"(run `sast-eval download --benchmark {benchmark}` to fetch it)", file=sys.stderr)
+        return 0
+    return _run(module, func, argv)
+
+
 def cmd_build(args: argparse.Namespace) -> int:
     rc = 0
     Path(args.tasks).mkdir(parents=True, exist_ok=True)
     Path(args.imported).mkdir(parents=True, exist_ok=True)
-    rc |= _run("sast_eval.adapters.owasp_adapter", "main",
-                ["--root", str(Path(args.corpus) / "BenchmarkJava"), "--out", f"{args.tasks}/owasp.jsonl"])
-    rc |= _run("sast_eval.importers.bountytasks_importer", "main",
-                ["--metadata-root", str(Path(args.corpus) / "bountytasks"),
-                 "--tasks-out", f"{args.tasks}/bountytasks.jsonl",
-                 "--imported-out", f"{args.imported}/bountytasks.jsonl"])
-    rc |= _run("sast_eval.importers.cwebench_importer", "main",
-                ["--root", str(Path(args.corpus) / "cwe-bench-java"),
-                 "--tasks-out", f"{args.tasks}/cwebench.jsonl",
-                 "--imported-out", f"{args.imported}/cwebench.jsonl"])
-    rc |= _run("sast_eval.importers.cybergym_importer", "main",
-                ["--root", str(Path(args.corpus) / "cybergym"),
-                 "--tasks-out", f"{args.tasks}/cybergym.jsonl",
-                 "--imported-out", f"{args.imported}/cybergym.jsonl"])
-    rc |= _run("sast_eval.adapters.sastbench_adapter", "main",
-                ["--root", str(Path(args.corpus) / "sast-bench"), "--out", f"{args.tasks}/sastbench.jsonl"])
+    rc |= _build_one("sast_eval.adapters.owasp_adapter", "main",
+                     ["--root", str(Path(args.corpus) / "BenchmarkJava"), "--out", f"{args.tasks}/owasp.jsonl"],
+                     "owasp", Path(args.corpus) / "BenchmarkJava")
+    rc |= _build_one("sast_eval.importers.bountytasks_importer", "main",
+                     ["--metadata-root", str(Path(args.corpus) / "bountytasks"),
+                      "--tasks-out", f"{args.tasks}/bountytasks.jsonl",
+                      "--imported-out", f"{args.imported}/bountytasks.jsonl"],
+                     "bountytasks", Path(args.corpus) / "bountytasks")
+    rc |= _build_one("sast_eval.importers.cwebench_importer", "main",
+                     ["--root", str(Path(args.corpus) / "cwe-bench-java"),
+                      "--tasks-out", f"{args.tasks}/cwebench.jsonl",
+                      "--imported-out", f"{args.imported}/cwebench.jsonl"],
+                     "cwebench", Path(args.corpus) / "cwe-bench-java")
+    rc |= _build_one("sast_eval.importers.cybergym_importer", "main",
+                     ["--root", str(Path(args.corpus) / "cybergym"),
+                      "--tasks-out", f"{args.tasks}/cybergym.jsonl",
+                      "--imported-out", f"{args.imported}/cybergym.jsonl"],
+                     "cybergym", Path(args.corpus) / "cybergym")
+    rc |= _build_one("sast_eval.adapters.sastbench_adapter", "main",
+                     ["--root", str(Path(args.corpus) / "sast-bench"), "--out", f"{args.tasks}/sastbench.jsonl"],
+                     "sastbench", Path(args.corpus) / "sast-bench")
     return rc
 
 
@@ -117,7 +150,8 @@ def cmd_score(args: argparse.Namespace) -> int:
 
 
 def cmd_all(args: argparse.Namespace) -> int:
-    rc = cmd_build(args)
+    rc = cmd_download(args)
+    rc |= cmd_build(args)
     rc |= cmd_fetch(args)
     rc |= cmd_package(args)
     Path(f"{args.results}/raw/{args.tool}").mkdir(parents=True, exist_ok=True)
@@ -133,6 +167,19 @@ def build_parser() -> argparse.ArgumentParser:
         description="Unified SAST evaluation harness across 5 vulnerability benchmarks.",
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
+
+    # download
+    p = sub.add_parser("download", help="Download benchmark corpora into corpus/ (Step 1)")
+    _add_corpus_args(p)
+    p.add_argument("--benchmark", "-b", default="all",
+                   help="Comma-separated benchmarks to download (default: all). "
+                        "One or more of: owasp,bountytasks,cwebench,cybergym,sastbench")
+    p.add_argument("--full", action="store_true", help="Full git history (default: shallow clone)")
+    p.add_argument("--force", action="store_true",
+                   help="Remove existing dir and re-download (default: skip if present)")
+    p.add_argument("--cybergym-limit", type=int, default=None,
+                   help="Cap CyberGym task tarballs downloaded (full dataset is ~240GB)")
+    p.set_defaults(func=cmd_download)
 
     # build
     p = sub.add_parser("build", help="Build all 5 benchmarks' tasks (tasks/*.jsonl)")
@@ -170,7 +217,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_score)
 
     # all
-    p = sub.add_parser("all", help="build + fetch + package + match + exploit + score")
+    p = sub.add_parser("all", help="download + build + fetch + package + match + exploit + score")
     _add_corpus_args(p)
     p.add_argument("--tool", required=True, help="Tool name")
     p.add_argument("--cybergym-limit", type=int, default=None,
