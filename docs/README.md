@@ -9,6 +9,7 @@
 | [CYBERGYM_INTEGRATION.md](CYBERGYM_INTEGRATION.md) | How CyberGym — a non-SAST, fuzzer-based benchmark — was made compatible with the SAST scoring pipeline as a location-only proxy. |
 | [SASTBENCH_INTEGRATION.md](SASTBENCH_INTEGRATION.md) | How SASTbench — region-level ground truth with capability-safe FP traps — was integrated as the second end-to-end adapter. |
 | [ADDING_A_BENCHMARK.md](ADDING_A_BENCHMARK.md) | Step-by-step guide to adding a new benchmark: registering the corpus, writing an adapter/importer, materializing source, packaging. |
+| [RELEASING.md](RELEASING.md) | Publishing `sast-eval` to PyPI: one-time Trusted Publishing setup, per-release checklist, rollback, security model. |
 
 ## Also relevant
 

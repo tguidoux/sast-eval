@@ -204,6 +204,9 @@ See [docs/ADDING_A_BENCHMARK.md](docs/ADDING_A_BENCHMARK.md) for a step-by-step
 guide to adding a new benchmark: registering the corpus, writing an adapter or
 importer, materializing source, and packaging per-task `.tar.gz` codebases.
 
+See [docs/RELEASING.md](docs/RELEASING.md) for publishing `sast-eval` to PyPI
+(Trusted Publishing setup + per-release checklist).
+
 ## Try it with the example tool
 
 `tools/exampletool/` ships a hand-crafted SARIF sample per benchmark (one TP +

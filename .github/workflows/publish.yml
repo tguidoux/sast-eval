@@ -1,0 +1,75 @@
+name: publish
+
+# Publish to PyPI on a pushed v* tag. Uses Trusted Publishing (OIDC) — no
+# long-lived API token. Only someone with write access to this repo can push
+# a tag, so only they can trigger a release.
+#
+# One-time PyPI setup (do this yourself, it requires your account):
+#   1. Publish the first version manually (twine upload) to create the project,
+#      OR reserve the name at https://pypi.org/manage/projects/
+#   2. Add a Trusted Publisher at:
+#      https://pypi.org/manage/project/sast-eval/settings/publishing/
+#        Owner:      <your github username>
+#        Repository: sast-eval
+#        Workflow:   publish.yml
+#        Environment: pypi
+#   3. Ensure you are the sole Owner on the project's Collaboration page.
+#
+# See docs/RELEASING.md for the full release checklist.
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+# Permissions required for Trusted Publishing (OIDC) via pypa/gh-action-pypi-publish.
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install build tooling
+        run: pip install build
+
+      - name: Build distributions
+        run: python -m build
+
+      - name: Verify metadata
+        run: pipx run twine check dist/*
+
+      - name: Verify wheel installs and imports
+        run: |
+          python -m venv /tmp/verify
+          /tmp/verify/bin/pip install dist/*.whl
+          /tmp/verify/bin/python -c "import sast_eval; print('version', sast_eval.__version__)"
+          /tmp/verify/bin/python -c "from importlib.resources import files; assert (files('sast_eval.matching')/'cwe_map.json').is_file(); print('cwe_map.json OK')"
+
+      - name: Upload distributions
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    # Match the environment name configured on PyPI's Trusted Publisher page.
+    environment: pypi
+    steps:
+      - name: Download distributions
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
