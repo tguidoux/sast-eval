@@ -1,6 +1,7 @@
 """Unified CLI for the sast-eval harness.
 
-Subcommands map to the existing module mains (each accepts ``argv: list[str]``):
+Thin argparse adapter over :mod:`sast_eval.api` — the CLI and the programmatic
+API run the exact same code, so behavior is identical.
 
     sast-eval prepare     download + build + fetch + package (one command to
                           produce standardized codebases; the usual entry point)
@@ -21,22 +22,15 @@ import argparse
 import sys
 from pathlib import Path
 
-# Default layout (matches the repo's Makefile defaults).
+from sast_eval.api import SastEval, ResultRun
+
+# Default layout (mirrors sast_eval.api).
 CORPUS = "corpus"
 TASKS = "tasks"
 IMPORTED = "imported"
 RESULTS = "results"
 REPORTS = "reports"
 CODEBASES = "codebases"
-
-
-def _run(module: str, func: str, argv: list[str]) -> int:
-    """Import module.func and call it with argv."""
-    import importlib
-
-    mod = importlib.import_module(module)
-    fn = getattr(mod, func)
-    return fn(argv)
 
 
 def _add_corpus_args(p: argparse.ArgumentParser) -> None:
@@ -49,137 +43,66 @@ def _add_corpus_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--codebases", default=CODEBASES, help="Codebases dir (default: codebases)")
 
 
+def _sast_from_args(args: argparse.Namespace, *, limit: int | None = None) -> SastEval:
+    """Build a SastEval from the shared corpus args."""
+    return SastEval(
+        benchmark=getattr(args, "benchmark", None),
+        limit=limit if limit is not None else getattr(args, "limit", None),
+        corpus=args.corpus,
+        tasks=args.tasks,
+        imported=args.imported,
+        results=args.results,
+        reports=args.reports,
+        codebases_dir=args.codebases,
+    )
+
+
 def cmd_download(args: argparse.Namespace) -> int:
-    argv = ["--corpus", args.corpus]
-    if args.benchmark:
-        argv += ["--benchmark", args.benchmark]
-    if args.full:
-        argv += ["--full"]
-    if args.force:
-        argv += ["--force"]
-    if args.cybergym_limit is not None:
-        argv += ["--cybergym-limit", str(args.cybergym_limit)]
-    return _run("sast_eval.tools.download_corpus", "main", argv)
-
-
-def _build_one(module: str, func: str, argv: list[str], benchmark: str, corpus_dir: Path) -> int:
-    """Run one benchmark's build step, skipping gracefully if its corpus is missing.
-
-    This lets ``sast-eval build`` compose with selective ``sast-eval download``:
-    if you only downloaded some benchmarks, build only those and warn about the
-    rest instead of crashing on a missing CSV/file.
-    """
-    if not corpus_dir.is_dir():
-        print(f"  skip {benchmark}: {corpus_dir} not present "
-              f"(run `sast-eval download --benchmark {benchmark}` to fetch it)", file=sys.stderr)
-        return 0
-    return _run(module, func, argv)
+    sast = _sast_from_args(args)
+    return sast.download(
+        full=args.full,
+        force=args.force,
+        cybergym_limit=args.cybergym_limit,
+    )
 
 
 def cmd_build(args: argparse.Namespace) -> int:
-    rc = 0
-    Path(args.tasks).mkdir(parents=True, exist_ok=True)
-    Path(args.imported).mkdir(parents=True, exist_ok=True)
-    selected = None
-    if getattr(args, "benchmark", None):
-        selected = {b.strip() for b in args.benchmark.split(",") if b.strip()}
-
-    def _want(b: str) -> bool:
-        return selected is None or b in selected
-
-    if _want("owasp"):
-        rc |= _build_one("sast_eval.adapters.owasp_adapter", "main",
-                         ["--root", str(Path(args.corpus) / "BenchmarkJava"), "--out", f"{args.tasks}/owasp.jsonl"],
-                         "owasp", Path(args.corpus) / "BenchmarkJava")
-    if _want("bountytasks"):
-        rc |= _build_one("sast_eval.importers.bountytasks_importer", "main",
-                         ["--metadata-root", str(Path(args.corpus) / "bountytasks"),
-                          "--tasks-out", f"{args.tasks}/bountytasks.jsonl",
-                          "--imported-out", f"{args.imported}/bountytasks.jsonl"],
-                         "bountytasks", Path(args.corpus) / "bountytasks")
-    if _want("cwebench"):
-        rc |= _build_one("sast_eval.importers.cwebench_importer", "main",
-                         ["--root", str(Path(args.corpus) / "cwe-bench-java"),
-                          "--tasks-out", f"{args.tasks}/cwebench.jsonl",
-                          "--imported-out", f"{args.imported}/cwebench.jsonl"],
-                         "cwebench", Path(args.corpus) / "cwe-bench-java")
-    if _want("cybergym"):
-        rc |= _build_one("sast_eval.importers.cybergym_importer", "main",
-                         ["--root", str(Path(args.corpus) / "cybergym"),
-                          "--tasks-out", f"{args.tasks}/cybergym.jsonl",
-                          "--imported-out", f"{args.imported}/cybergym.jsonl"],
-                         "cybergym", Path(args.corpus) / "cybergym")
-    if _want("sastbench"):
-        rc |= _build_one("sast_eval.adapters.sastbench_adapter", "main",
-                         ["--root", str(Path(args.corpus) / "sast-bench"), "--out", f"{args.tasks}/sastbench.jsonl"],
-                         "sastbench", Path(args.corpus) / "sast-bench")
-    return rc
+    return _sast_from_args(args).build()
 
 
 def cmd_fetch(args: argparse.Namespace) -> int:
-    argv = [
-        "--bountytasks", str(Path(args.corpus) / "bountytasks"),
-        "--cwebench", str(Path(args.corpus) / "cwe-bench-java"),
-        "--cybergym", str(Path(args.corpus) / "cybergym"),
-        "--sastbench", str(Path(args.corpus) / "sast-bench"),
-    ]
-    if args.benchmark:
-        # fetch only handles these four; owasp is self-contained (no fetch step).
-        # Silently drop owasp so `prepare --benchmark owasp` doesn't error here.
-        fetch_benchmarks = [b.strip() for b in args.benchmark.split(",")
-                            if b.strip() in {"bountytasks", "cwebench", "cybergym", "sastbench"}]
-        if fetch_benchmarks:
-            argv += ["--benchmark", ",".join(fetch_benchmarks)]
-    # --tasks-filter (explicit) takes precedence; otherwise use the --tasks dir
-    # if it exists and contains jsonl files (so `sast-eval fetch` after `build`
-    # automatically fetches only built tasks).
-    tasks_filter = getattr(args, "tasks_filter", None) or args.tasks
-    if tasks_filter and Path(tasks_filter).is_dir() and any(Path(tasks_filter).glob("*.jsonl")):
-        argv += ["--tasks", tasks_filter]
-    if args.limit is not None:
-        argv += ["--limit", str(args.limit)]
-    if args.cybergym_limit is not None:
-        argv += ["--cybergym-limit", str(args.cybergym_limit)]
-    return _run("sast_eval.tools.fetch_sources", "main", argv)
+    sast = _sast_from_args(args)
+    return sast.fetch(
+        tasks_filter=getattr(args, "tasks_filter", None),
+        cybergym_limit=getattr(args, "cybergym_limit", None),
+    )
 
 
 def cmd_package(args: argparse.Namespace) -> int:
-    Path(args.codebases).mkdir(parents=True, exist_ok=True)
-    argv = ["--tasks", args.tasks, "--out", args.codebases]
-    if args.benchmark:
-        argv += ["--benchmark", args.benchmark]
-    if args.limit is not None:
-        argv += ["--limit", str(args.limit)]
-    return _run("sast_eval.tools.package_codebases", "main", argv)
+    return _sast_from_args(args).package()
 
 
 def cmd_match(args: argparse.Namespace) -> int:
-    out = f"{args.results}/matched/{args.tool}"
-    Path(out).mkdir(parents=True, exist_ok=True)
-    argv = ["--tasks", args.tasks, "--results", f"{args.results}/raw/{args.tool}", "--out", out, "--tool", args.tool]
-    rules_path = Path(f"tools/{args.tool}/rules.json")
-    if rules_path.exists():
-        argv += ["--rules", str(rules_path)]
-    return _run("sast_eval.matching.matcher", "main", argv)
+    sast = _sast_from_args(args)
+    with sast.results(args.tool) as run:
+        run.match()
+    return 0
 
 
 def cmd_exploit(args: argparse.Namespace) -> int:
-    out = f"{args.results}/exploits/{args.tool}"
-    Path(out).mkdir(parents=True, exist_ok=True)
-    return _run("sast_eval.exploit.oracle", "main",
-                ["--matched", f"{args.results}/matched/{args.tool}",
-                 "--tasks", args.tasks, "--out", out, "--codebases", args.codebases])
+    sast = _sast_from_args(args)
+    with sast.results(args.tool) as run:
+        run.matched_dir.mkdir(parents=True, exist_ok=True)
+        run.exploit()
+    return 0
 
 
 def cmd_score(args: argparse.Namespace) -> int:
-    Path(args.reports).mkdir(parents=True, exist_ok=True)
-    out = f"{args.reports}/scorecard.md"
-    argv = ["--matched", f"{args.results}/matched/{args.tool}",
-            "--imported", args.imported, "--tasks", args.tasks, "--out", out]
-    exploits_dir = Path(f"{args.results}/exploits")
-    if exploits_dir.is_dir():
-        argv += ["--exploits", str(exploits_dir)]
-    return _run("sast_eval.scoring.metrics", "main", argv)
+    sast = _sast_from_args(args)
+    with sast.results(args.tool) as run:
+        run.matched_dir.mkdir(parents=True, exist_ok=True)
+        run.score()
+    return 0
 
 
 def cmd_prepare(args: argparse.Namespace) -> int:
@@ -189,61 +112,26 @@ def cmd_prepare(args: argparse.Namespace) -> int:
     By default caps each benchmark to 20 codebases so the command always
     finishes fast; pass ``--all`` to remove the cap.
     """
-    rc = 0
-    # Resolve the effective limit: --all wins, then --limit, then the safe default.
     if args.all:
         limit = None
     elif args.limit is not None:
         limit = args.limit
     else:
         limit = 20  # safe default so `prepare` always finishes quickly
-
-    # 1. Download any missing corpora (only what's absent; idempotent).
-    print("\n=== [1/4] download — fetch missing benchmark corpora ===")
-    dl_args = argparse.Namespace(**vars(args))
-    dl_args.benchmark = args.benchmark or "all"
-    dl_args.full = args.full
-    dl_args.force = False  # prepare never re-downloads; it only fills gaps
-    dl_args.cybergym_limit = limit
-    rc |= cmd_download(dl_args)
-
-    # 2. Build task records from the corpora.
-    print("\n=== [2/4] build — normalize corpora into tasks/*.jsonl ===")
-    rc |= cmd_build(args)
-
-    # 3. Fetch source trees for the built tasks (capped by `limit`).
-    print("\n=== [3/4] fetch — clone source trees for built tasks ===")
-    fetch_args = argparse.Namespace(**vars(args))
-    fetch_args.benchmark = args.benchmark
-    fetch_args.tasks_filter = args.tasks  # only fetch codebases referenced by built tasks
-    fetch_args.limit = limit
-    fetch_args.cybergym_limit = limit
-    rc |= cmd_fetch(fetch_args)
-
-    # 4. Package per-task .tar.gz codebases (capped by `limit`).
-    print("\n=== [4/4] package — build per-task .tar.gz codebases ===")
-    pkg_args = argparse.Namespace(**vars(args))
-    pkg_args.benchmark = args.benchmark
-    pkg_args.limit = limit
-    rc |= cmd_package(pkg_args)
-
-    print("\n=== prepare done ===")
-    print(f"  tasks/        {sum(1 for _ in Path(args.tasks).glob('*.jsonl'))} benchmark records")
-    print(f"  codebases/    {len(list(Path(args.codebases).rglob('*.tar.gz')))} tarballs")
-    if not args.all and limit is not None:
-        print(f"  (capped at {limit} per benchmark — pass --all for everything)")
-    return rc
+    sast = _sast_from_args(args, limit=limit)
+    return sast.prepare(full=args.full, all_=args.all)
 
 
 def cmd_all(args: argparse.Namespace) -> int:
-    rc = cmd_download(args)
-    rc |= cmd_build(args)
-    rc |= cmd_fetch(args)
-    rc |= cmd_package(args)
-    Path(f"{args.results}/raw/{args.tool}").mkdir(parents=True, exist_ok=True)
-    rc |= cmd_match(args)
-    rc |= cmd_exploit(args)
-    rc |= cmd_score(args)
+    sast = _sast_from_args(args)
+    rc = sast.download(cybergym_limit=getattr(args, "cybergym_limit", None))
+    rc |= sast.build()
+    rc |= sast.fetch(cybergym_limit=getattr(args, "cybergym_limit", None))
+    rc |= sast.package()
+    with sast.results(args.tool) as run:
+        run.match()
+        run.exploit()
+        run.score()
     return rc
 
 

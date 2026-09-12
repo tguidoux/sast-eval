@@ -5,6 +5,21 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.5] - 2026-09-12
+
+### Changed
+
+- **The CLI now runs on the programmatic API.** `sast_eval.cli` is a thin
+  argparse adapter over `sast_eval.api` (`SastEval` / `ResultRun`): every
+  `sast-eval <cmd>` builds a `SastEval` and calls the same method a Python
+  user would. One code path, identical behavior, no drift.
+  - `cmd_download`/`cmd_build`/`cmd_fetch`/`cmd_package`/`cmd_prepare`/`cmd_all`
+    delegate to `SastEval.download/build/fetch/package/prepare`.
+  - `cmd_match`/`cmd_exploit`/`cmd_score` delegate to `ResultRun.match/exploit/score`
+    via `SastEval.results(tool)`.
+  - The dispatch logic (`_run`) moved from `cli.py` to `api.py`, so the API
+    no longer imports the CLI — the dependency direction is now `cli → api`.
+
 ## [0.1.4] - 2026-09-12
 
 ### Added

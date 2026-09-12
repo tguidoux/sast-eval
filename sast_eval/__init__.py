@@ -16,6 +16,6 @@ the same code paths the CLI uses::
 """
 from sast_eval.api import SastEval, Codebase, ResultRun
 
-__version__ = "0.1.4"
+__version__ = "0.1.5"
 
 __all__ = ["SastEval", "Codebase", "ResultRun", "__version__"]

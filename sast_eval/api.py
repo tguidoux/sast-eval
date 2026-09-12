@@ -1,9 +1,10 @@
-"""Programmatic API for the sast-eval harness.
+"""Programmatic API for the sast-eval harness — the single engine.
 
-A thin, typed wrapper over the same code paths the ``sast-eval`` CLI uses, so
-behavior is identical. Use this when you want to drive the harness from Python
-— e.g. running a SAST tool over each codebase in a sandbox and collecting
-SARIF, then matching/scoring programmatically.
+The CLI (``sast_eval.cli``) is a thin argparse adapter over this module, so
+both ``sast-eval <cmd>`` and ``SastEval.<method>`` run the exact same code.
+Use this when you want to drive the harness from Python — e.g. running a
+SAST tool over each codebase in a sandbox and collecting SARIF, then
+matching/scoring programmatically.
 
     from sast_eval import SastEval
 
@@ -28,19 +29,34 @@ All path/benchmark/limit defaults match the CLI (``corpus/``, ``tasks/``,
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
 import shutil
+import sys
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
-from sast_eval import cli
-
 __all__ = ["SastEval", "Codebase", "ResultRun"]
+
+# Default layout (matches the repo's Makefile defaults; mirrored in cli.py).
+CORPUS = "corpus"
+TASKS = "tasks"
+IMPORTED = "imported"
+RESULTS = "results"
+REPORTS = "reports"
+CODEBASES = "codebases"
 
 # Benchmarks that have a fetch step (OWASP is self-contained — already checked
 # out in the corpus, no source to clone).
 _FETCH_BENCHMARKS = {"bountytasks", "cwebench", "cybergym", "sastbench"}
+
+
+def _run(module: str, func: str, argv: list[str]) -> int:
+    """Import ``module.func`` and call it with ``argv``. Single dispatch point."""
+    mod = importlib.import_module(module)
+    fn = getattr(mod, func)
+    return fn(argv)
 
 
 class SastEval:
@@ -56,12 +72,12 @@ class SastEval:
         *,
         benchmark: str | None = None,
         limit: int | None = None,
-        corpus: str = cli.CORPUS,
-        tasks: str = cli.TASKS,
-        imported: str = cli.IMPORTED,
-        results: str = cli.RESULTS,
-        reports: str = cli.REPORTS,
-        codebases_dir: str = cli.CODEBASES,
+        corpus: str = CORPUS,
+        tasks: str = TASKS,
+        imported: str = IMPORTED,
+        results: str = RESULTS,
+        reports: str = REPORTS,
+        codebases_dir: str = CODEBASES,
     ) -> None:
         self.benchmark = benchmark
         self.limit = limit
@@ -72,47 +88,171 @@ class SastEval:
         self.reports = reports
         self.codebases_dir = codebases_dir
 
-    # ── prepare / build / fetch / package ───────────────────────────────
+    # ── download ────────────────────────────────────────────────────────
 
-    def _ns(self, **kw) -> argparse.Namespace:
-        """Build a Namespace with the shared corpus args pre-filled."""
-        base = dict(
-            corpus=self.corpus,
-            tasks=self.tasks,
-            imported=self.imported,
-            results=self.results_dir,
-            reports=self.reports,
-            codebases=self.codebases_dir,
-            benchmark=self.benchmark,
-            limit=self.limit,
+    def download(
+        self,
+        *,
+        full: bool = False,
+        force: bool = False,
+        cybergym_limit: int | None = None,
+    ) -> int:
+        """Download benchmark corpora into ``corpus/``. Equivalent to
+        ``sast-eval download``. ``benchmark`` defaults to ``"all"`` here.
+        """
+        argv = ["--corpus", self.corpus]
+        argv += ["--benchmark", self.benchmark or "all"]
+        if full:
+            argv += ["--full"]
+        if force:
+            argv += ["--force"]
+        if cybergym_limit is not None:
+            argv += ["--cybergym-limit", str(cybergym_limit)]
+        return _run("sast_eval.tools.download_corpus", "main", argv)
+
+    # ── build ───────────────────────────────────────────────────────────
+
+    def build(self) -> int:
+        """Build task records (``tasks/*.jsonl``). Equivalent to ``sast-eval build``."""
+        Path(self.tasks).mkdir(parents=True, exist_ok=True)
+        Path(self.imported).mkdir(parents=True, exist_ok=True)
+        selected = self._selected_benchmarks()
+        rc = 0
+        rc |= self._build_one(
+            "sast_eval.adapters.owasp_adapter", "main",
+            ["--root", str(Path(self.corpus) / "BenchmarkJava"),
+             "--out", f"{self.tasks}/owasp.jsonl"],
+            "owasp", Path(self.corpus) / "BenchmarkJava", selected,
         )
-        base.update(kw)
-        return argparse.Namespace(**base)
+        rc |= self._build_one(
+            "sast_eval.importers.bountytasks_importer", "main",
+            ["--metadata-root", str(Path(self.corpus) / "bountytasks"),
+             "--tasks-out", f"{self.tasks}/bountytasks.jsonl",
+             "--imported-out", f"{self.imported}/bountytasks.jsonl"],
+            "bountytasks", Path(self.corpus) / "bountytasks", selected,
+        )
+        rc |= self._build_one(
+            "sast_eval.importers.cwebench_importer", "main",
+            ["--root", str(Path(self.corpus) / "cwe-bench-java"),
+             "--tasks-out", f"{self.tasks}/cwebench.jsonl",
+             "--imported-out", f"{self.imported}/cwebench.jsonl"],
+            "cwebench", Path(self.corpus) / "cwe-bench-java", selected,
+        )
+        rc |= self._build_one(
+            "sast_eval.importers.cybergym_importer", "main",
+            ["--root", str(Path(self.corpus) / "cybergym"),
+             "--tasks-out", f"{self.tasks}/cybergym.jsonl",
+             "--imported-out", f"{self.imported}/cybergym.jsonl"],
+            "cybergym", Path(self.corpus) / "cybergym", selected,
+        )
+        rc |= self._build_one(
+            "sast_eval.adapters.sastbench_adapter", "main",
+            ["--root", str(Path(self.corpus) / "sast-bench"),
+             "--out", f"{self.tasks}/sastbench.jsonl"],
+            "sastbench", Path(self.corpus) / "sast-bench", selected,
+        )
+        return rc
+
+    def _build_one(
+        self, module: str, func: str, argv: list[str], benchmark: str,
+        corpus_dir: Path, selected: set[str] | None,
+    ) -> int:
+        """Run one benchmark's build step, skipping gracefully if its corpus
+        is missing or not selected. Lets ``build`` compose with selective
+        ``download``."""
+        if selected is not None and benchmark not in selected:
+            return 0
+        if not corpus_dir.is_dir():
+            print(f"  skip {benchmark}: {corpus_dir} not present "
+                  f"(run `sast-eval download --benchmark {benchmark}` to fetch it)",
+                  file=sys.stderr)
+            return 0
+        return _run(module, func, argv)
+
+    # ── fetch ───────────────────────────────────────────────────────────
+
+    def fetch(
+        self,
+        *,
+        tasks_filter: str | None = None,
+        cybergym_limit: int | None = None,
+    ) -> int:
+        """Fetch source trees. Equivalent to ``sast-eval fetch``."""
+        argv = [
+            "--bountytasks", str(Path(self.corpus) / "bountytasks"),
+            "--cwebench", str(Path(self.corpus) / "cwe-bench-java"),
+            "--cybergym", str(Path(self.corpus) / "cybergym"),
+            "--sastbench", str(Path(self.corpus) / "sast-bench"),
+        ]
+        if self.benchmark:
+            fetch_benchmarks = [b.strip() for b in self.benchmark.split(",")
+                               if b.strip() in _FETCH_BENCHMARKS]
+            if fetch_benchmarks:
+                argv += ["--benchmark", ",".join(fetch_benchmarks)]
+        tf = tasks_filter or self.tasks
+        if tf and Path(tf).is_dir() and any(Path(tf).glob("*.jsonl")):
+            argv += ["--tasks", tf]
+        if self.limit is not None:
+            argv += ["--limit", str(self.limit)]
+        cl = cybergym_limit if cybergym_limit is not None else self.limit
+        if cl is not None:
+            argv += ["--cybergym-limit", str(cl)]
+        return _run("sast_eval.tools.fetch_sources", "main", argv)
+
+    # ── package ─────────────────────────────────────────────────────────
+
+    def package(self) -> int:
+        """Package per-task ``.tar.gz`` codebases. Equivalent to ``sast-eval package``."""
+        Path(self.codebases_dir).mkdir(parents=True, exist_ok=True)
+        argv = ["--tasks", self.tasks, "--out", self.codebases_dir]
+        if self.benchmark:
+            argv += ["--benchmark", self.benchmark]
+        if self.limit is not None:
+            argv += ["--limit", str(self.limit)]
+        return _run("sast_eval.tools.package_codebases", "main", argv)
+
+    # ── prepare ──────────────────────────────────────────────────────────
 
     def prepare(self, *, full: bool = False, all_: bool = False) -> int:
         """Run download → build → fetch → package (idempotent; skips done work).
 
-        Equivalent to ``sast-eval prepare``. By default uses the configured
-        ``limit``; pass ``all_=True`` to remove the cap.
+        Equivalent to ``sast-eval prepare``. By default caps each benchmark to
+        20 codebases so it always finishes fast; pass ``all_=True`` to remove
+        the cap.
         """
-        ns = self._ns(full=full, all=all_, tasks_filter=None, cybergym_limit=self.limit, force=False)
-        return cli.cmd_prepare(ns)
+        rc = 0
+        if all_:
+            limit = None
+        else:
+            limit = self.limit if self.limit is not None else 20
 
-    def build(self) -> int:
-        """Build task records (``tasks/*.jsonl``). Equivalent to ``sast-eval build``."""
-        return cli.cmd_build(self._ns())
+        print("\n=== [1/4] download — fetch missing benchmark corpora ===")
+        rc |= self.download(full=full, force=False, cybergym_limit=limit)
 
-    def fetch(self, *, cybergym_limit: int | None = None) -> int:
-        """Fetch source trees. Equivalent to ``sast-eval fetch``."""
-        ns = self._ns(
-            tasks_filter=self.tasks,
-            cybergym_limit=cybergym_limit if cybergym_limit is not None else self.limit,
-        )
-        return cli.cmd_fetch(ns)
+        print("\n=== [2/4] build — normalize corpora into tasks/*.jsonl ===")
+        rc |= self.build()
 
-    def package(self) -> int:
-        """Package per-task ``.tar.gz`` codebases. Equivalent to ``sast-eval package``."""
-        return cli.cmd_package(self._ns())
+        print("\n=== [3/4] fetch — clone source trees for built tasks ===")
+        # Temporarily apply the resolved limit + tasks_filter for this step.
+        saved_limit, self.limit = self.limit, limit
+        try:
+            rc |= self.fetch(tasks_filter=self.tasks, cybergym_limit=limit)
+        finally:
+            self.limit = saved_limit
+
+        print("\n=== [4/4] package — build per-task .tar.gz codebases ===")
+        saved_limit, self.limit = self.limit, limit
+        try:
+            rc |= self.package()
+        finally:
+            self.limit = saved_limit
+
+        print("\n=== prepare done ===")
+        print(f"  tasks/        {sum(1 for _ in Path(self.tasks).glob('*.jsonl'))} benchmark records")
+        print(f"  codebases/    {len(list(Path(self.codebases_dir).rglob('*.tar.gz')))} tarballs")
+        if not all_ and limit is not None:
+            print(f"  (capped at {limit} per benchmark — pass --all for everything)")
+        return rc
 
     # ── codebase iteration ───────────────────────────────────────────────
 
@@ -317,45 +457,45 @@ class ResultRun:
 
     def match(self) -> Path:
         """Match saved SARIF against ground truth → ``results/matched/<tool>/``."""
-        ns = argparse.Namespace(
-            corpus=self._owner.corpus,
-            tasks=self._owner.tasks,
-            imported=self._owner.imported,
-            results=self._owner.results_dir,
-            reports=self._owner.reports,
-            codebases=self._owner.codebases_dir,
-            tool=self.tool,
-        )
-        cli.cmd_match(ns)
+        self.matched_dir.mkdir(parents=True, exist_ok=True)
+        argv = [
+            "--tasks", self._owner.tasks,
+            "--results", str(self.raw_dir),
+            "--out", str(self.matched_dir),
+            "--tool", self.tool,
+        ]
+        rules_path = Path(f"tools/{self.tool}/rules.json")
+        if rules_path.exists():
+            argv += ["--rules", str(rules_path)]
+        _run("sast_eval.matching.matcher", "main", argv)
         return self.matched_dir
 
     def exploit(self) -> Path:
         """Run exploit-validation oracles on matched results → ``results/exploits/<tool>/``."""
-        ns = argparse.Namespace(
-            corpus=self._owner.corpus,
-            tasks=self._owner.tasks,
-            imported=self._owner.imported,
-            results=self._owner.results_dir,
-            reports=self._owner.reports,
-            codebases=self._owner.codebases_dir,
-            tool=self.tool,
-        )
-        cli.cmd_exploit(ns)
+        self.exploits_dir.mkdir(parents=True, exist_ok=True)
+        _run("sast_eval.exploit.oracle", "main", [
+            "--matched", str(self.matched_dir),
+            "--tasks", self._owner.tasks,
+            "--out", str(self.exploits_dir),
+            "--codebases", self._owner.codebases_dir,
+        ])
         return self.exploits_dir
 
     def score(self) -> Path:
         """Render the scorecard → ``reports/scorecard.md``. Returns its path."""
-        ns = argparse.Namespace(
-            corpus=self._owner.corpus,
-            tasks=self._owner.tasks,
-            imported=self._owner.imported,
-            results=self._owner.results_dir,
-            reports=self._owner.reports,
-            codebases=self._owner.codebases_dir,
-            tool=self.tool,
-        )
-        cli.cmd_score(ns)
-        self.scorecard_path = Path(self._owner.reports) / "scorecard.md"
+        Path(self._owner.reports).mkdir(parents=True, exist_ok=True)
+        out = f"{self._owner.reports}/scorecard.md"
+        argv = [
+            "--matched", str(self.matched_dir),
+            "--imported", self._owner.imported,
+            "--tasks", self._owner.tasks,
+            "--out", out,
+        ]
+        exploits_root = Path(self._owner.results_dir) / "exploits"
+        if exploits_root.is_dir():
+            argv += ["--exploits", str(exploits_root)]
+        _run("sast_eval.scoring.metrics", "main", argv)
+        self.scorecard_path = Path(out)
         return self.scorecard_path
 
     scorecard_path: Path
