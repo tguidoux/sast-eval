@@ -114,13 +114,26 @@ sast-eval build       # or: make build
 #    Clones each codebase at the vulnerable/buggy commit; downloads CyberGym
 #    per-task data from HuggingFace; clones SASTbench Full Track real-world repos.
 #    OWASP + SASTbench Core Track are already checked out.
-#    CyberGym's full dataset is ~240GB — cap it for testing:
-sast-eval fetch --cybergym-limit 20    # empty = fetch all 1507 tasks
-# or: make fetch CYBERGYM_LIMIT=20
+#
+#    Fetching ALL codebases is slow (120 CWE-Bench repos, 189 SASTbench Full
+#    Track repos, CyberGym's ~240GB dataset). Three filters make it tractable:
+#
+#      --benchmark bountytasks,cwebench   # only these benchmarks
+#      --tasks-filter tasks               # only codebases referenced by tasks/*.jsonl
+#      --limit 5                          # cap each benchmark to 5 codebases
+#
+#    The fastest path for a quick test: build first, then fetch only what you built:
+sast-eval fetch --tasks-filter tasks --limit 5
+#    Or fetch everything for a specific benchmark:
+sast-eval fetch --benchmark bountytasks
+# or: make fetch BENCHMARK=bountytasks LIMIT=5
 
 # 4. Build per-task .tar.gz codebases for SAST analysis
 #    codebases/<benchmark>/<task_id>.tar.gz  (self-contained source per task)
-sast-eval package     # or: make package
+#    Same filters as fetch (--benchmark, --limit) let you package a subset:
+sast-eval package                        # all built tasks
+sast-eval package --benchmark owasp --limit 10   # first 10 OWASP tarballs
+# or: make package BENCHMARK=owasp LIMIT=10
 
 # 5. Run your SAST tool over each task's source_root, emit SARIF v2.1.0 to:
 #    results/raw/<tool>/<task_id with / → __>.sarif

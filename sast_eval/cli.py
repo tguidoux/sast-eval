@@ -109,6 +109,16 @@ def cmd_fetch(args: argparse.Namespace) -> int:
         "--cybergym", str(Path(args.corpus) / "cybergym"),
         "--sastbench", str(Path(args.corpus) / "sast-bench"),
     ]
+    if args.benchmark:
+        argv += ["--benchmark", args.benchmark]
+    # --tasks-filter (explicit) takes precedence; otherwise use the --tasks dir
+    # if it exists and contains jsonl files (so `sast-eval fetch` after `build`
+    # automatically fetches only built tasks).
+    tasks_filter = getattr(args, "tasks_filter", None) or args.tasks
+    if tasks_filter and Path(tasks_filter).is_dir() and any(Path(tasks_filter).glob("*.jsonl")):
+        argv += ["--tasks", tasks_filter]
+    if args.limit is not None:
+        argv += ["--limit", str(args.limit)]
     if args.cybergym_limit is not None:
         argv += ["--cybergym-limit", str(args.cybergym_limit)]
     return _run("sast_eval.tools.fetch_sources", "main", argv)
@@ -116,8 +126,12 @@ def cmd_fetch(args: argparse.Namespace) -> int:
 
 def cmd_package(args: argparse.Namespace) -> int:
     Path(args.codebases).mkdir(parents=True, exist_ok=True)
-    return _run("sast_eval.tools.package_codebases", "main",
-                ["--tasks", args.tasks, "--out", args.codebases])
+    argv = ["--tasks", args.tasks, "--out", args.codebases]
+    if args.benchmark:
+        argv += ["--benchmark", args.benchmark]
+    if args.limit is not None:
+        argv += ["--limit", str(args.limit)]
+    return _run("sast_eval.tools.package_codebases", "main", argv)
 
 
 def cmd_match(args: argparse.Namespace) -> int:
@@ -187,15 +201,44 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_build)
 
     # fetch
-    p = sub.add_parser("fetch", help="Fetch source for bountytasks/CWE-Bench/CyberGym/SASTbench")
+    p = sub.add_parser("fetch", help="Fetch source for bountytasks/CWE-Bench/CyberGym/SASTbench",
+                       formatter_class=argparse.RawDescriptionHelpFormatter,
+                       epilog="""\
+Examples:
+  sast-eval fetch                              # fetch all benchmarks, all tasks
+  sast-eval fetch --benchmark bountytasks      # only one benchmark
+  sast-eval fetch --tasks-filter tasks         # only codebases for built tasks (fastest)
+  sast-eval fetch --limit 5                    # cap each benchmark to 5 codebases
+  sast-eval fetch --benchmark cybergym --tasks-filter tasks --limit 5
+""")
     _add_corpus_args(p)
+    p.add_argument("--benchmark", "-b", default=None,
+                   help="Comma-separated benchmarks to fetch "
+                        "(bountytasks,cwebench,cybergym,sastbench). Default: all.")
+    p.add_argument("--tasks-filter", default=None,
+                   help="Tasks dir (tasks/*.jsonl). If set, only fetch codebases "
+                        "referenced by the built task records — the fastest option. "
+                        "(Defaults to the --tasks dir if not given.)")
+    p.add_argument("--limit", type=int, default=None,
+                   help="Cap the number of codebases fetched per benchmark (quick test).")
     p.add_argument("--cybergym-limit", type=int, default=None,
-                   help="Cap CyberGym tasks fetched from HuggingFace (empty = all)")
+                   help="Cap CyberGym tasks fetched from HuggingFace (alias for --limit on cybergym).")
     p.set_defaults(func=cmd_fetch)
 
     # package
-    p = sub.add_parser("package", help="Build per-task .tar.gz codebases for SAST analysis")
+    p = sub.add_parser("package", help="Build per-task .tar.gz codebases for SAST analysis",
+                      formatter_class=argparse.RawDescriptionHelpFormatter,
+                      epilog="""\
+Examples:
+  sast-eval package                       # package all built tasks
+  sast-eval package --benchmark owasp     # only one benchmark
+  sast-eval package --limit 10            # first 10 tasks per benchmark
+""")
     _add_corpus_args(p)
+    p.add_argument("--benchmark", "-b", default=None,
+                   help="Comma-separated benchmarks to package (e.g. owasp,cwebench). Default: all.")
+    p.add_argument("--limit", type=int, default=None,
+                   help="Cap the number of tasks packaged per benchmark (quick test).")
     p.set_defaults(func=cmd_package)
 
     # match

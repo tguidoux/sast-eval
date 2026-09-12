@@ -1,6 +1,6 @@
 [project]
 name = "sast-eval"
-version = "0.1.1"
+version = "0.1.2"
 description = "Unified SAST evaluation harness across OWASP BenchmarkJava, bountytasks, CWE-Bench-Java, CyberGym, and SASTbench"
 readme = "README.md"
 requires-python = ">=3.10"

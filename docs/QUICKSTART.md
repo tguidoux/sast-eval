@@ -88,9 +88,23 @@ If your SAST tool analyzes self-contained source trees rather than a full repo,
 build one `.tar.gz` per task:
 
 ```bash
-sast-eval fetch --cybergym-limit 20   # fetch/checkout source for packaging
-sast-eval package                      # → codebases/<bench>/<task_id>.tar.gz
+# Fastest: build tasks first, then fetch only the codebases they reference.
+sast-eval build
+sast-eval fetch --tasks-filter tasks --limit 5   # only built tasks, capped at 5/benchmark
+sast-eval package --limit 5                      # → codebases/<bench>/<task_id>.tar.gz
 ```
+
+Fetching every codebase is slow (120 CWE-Bench repos, 189 SASTbench Full Track
+repos, CyberGym's ~240GB dataset). The filters keep it tractable:
+
+| Flag | What it does |
+|------|-------------|
+| `--benchmark bountytasks,cwebench` | Only these benchmarks |
+| `--tasks-filter tasks` | Only codebases referenced by `tasks/*.jsonl` |
+| `--limit 5` | Cap each benchmark to 5 codebases |
+
+`fetch` is idempotent — already-fetched codebases are skipped, so you can re-run
+it as you add tasks. `package` accepts the same `--benchmark`/`--limit` flags.
 
 This produces `codebases/<benchmark>/<task_id with / → __>.tar.gz` plus a
 `codebases/MANIFEST.json` listing every tarball, its file count, and byte size.

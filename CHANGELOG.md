@@ -5,6 +5,38 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.2] - 2026-09-12
+
+### Added
+
+- **`sast-eval fetch` filters** — `--benchmark`, `--tasks-filter`, and `--limit`
+  let you clone only the codebases you actually need instead of every repo for
+  every benchmark. Previously `fetch` cloned all 120 CWE-Bench repos, all 189
+  SASTbench Full Track repos, and CyberGym's ~240GB dataset with no way to cap
+  it (only `--cybergym-limit` existed). Now:
+  - `--benchmark bountytasks,cwebench` selects benchmarks.
+  - `--tasks-filter tasks` only fetches codebases referenced by the built
+    `tasks/*.jsonl` records — the fastest path after `sast-eval build`.
+  - `--limit 5` caps each benchmark to 5 codebases (applies to all benchmarks,
+    not just CyberGym; `--cybergym-limit` is kept as a backwards-compatible alias).
+- **Progress counts** — `fetch` now prints `[N/total]` per codebase and a
+  `fetched=… skipped=… failed=…` summary per benchmark, so you can see it
+  working instead of a silent multi-minute clone.
+- **`sast-eval package` filters** — `--benchmark` and `--limit` mirror `fetch`,
+  so you can package a subset (e.g. `package --benchmark owasp --limit 10`).
+- `fetch_sastbench` is now self-contained — it reads `cases/full/*/case.json`
+  directly and clones into `.repos/<owner_repo>__<sha>/` instead of delegating
+  to the upstream `scripts/setup_repos.py`, which took no arguments and cloned
+  every Full Track repo.
+
+### Changed
+
+- `Makefile` `fetch`/`package` targets accept `BENCHMARK=`, `LIMIT=`, and
+  `CYBERGYM_LIMIT=` overrides; `fetch` always passes `--tasks $(TASKS)` so only
+  built-task codebases are fetched by default.
+- README and QUICKSTART document the new filters with a fast-path example:
+  `build → fetch --tasks-filter tasks --limit 5 → package --limit 5`.
+
 ## [0.1.1] - 2026-09-12
 
 ### Added

@@ -3,8 +3,10 @@
 #   make           - build all 5 benchmarks' tasks + materialize all codebases as tar.gz
 #   make setup     - create/refresh the uv venv
 #   make fetch     - fetch source for bountytasks + CWE-Bench + CyberGym + SASTbench (needed before package)
+#                   filters: BENCHMARK=..., LIMIT=N, CYBERGYM_LIMIT=N
 #   make build     - build all codebases into the common task format (tasks/*.jsonl)
 #   make package   - build per-task .tar.gz codebases for SAST analysis (codebases/)
+#                   filters: BENCHMARK=..., LIMIT=N
 #   make match     - match SARIF results against ground truth (needs results/raw/<tool>/)
 #   make exploit   - run exploit-validation oracles on matched results (§10)
 #   make score     - render the scorecard from matched + exploit results
@@ -27,6 +29,14 @@ REPORTS := reports
 # Tool name for match/score (override: make match TOOL=mytool)
 TOOL ?= testtool
 
+# Fetch/package filters (override on the command line):
+#   make fetch BENCHMARK=bountytasks LIMIT=5
+#   make package BENCHMARK=owasp LIMIT=10
+# fetch always passes --tasks $(TASKS) so only codebases referenced by the
+# built task records are fetched (the fast path).
+BENCHMARK ?=
+LIMIT ?=
+
 # Cap CyberGym tasks fetched from HuggingFace (full dataset is ~240GB).
 # Override: make fetch CYBERGYM_LIMIT=20  (empty = fetch all)
 CYBERGYM_LIMIT ?=
@@ -45,7 +55,11 @@ fetch:
 		--cwebench $(CORPUS)/cwe-bench-java \
 		--cybergym $(CORPUS)/cybergym \
 		--sastbench $(CORPUS)/sast-bench \
+		--tasks $(TASKS) \
+		$(if $(BENCHMARK),--benchmark $(BENCHMARK)) \
+		$(if $(LIMIT),--limit $(LIMIT)) \
 		$(if $(CYBERGYM_LIMIT),--cybergym-limit $(CYBERGYM_LIMIT))
+	@echo "=== Fetched source trees (idempotent: skips already-fetched) ==="
 
 build: build-owasp build-bountytasks build-cwebench build-cybergym build-sastbench
 	@echo "=== Built all codebases into common format ==="
@@ -53,7 +67,9 @@ build: build-owasp build-bountytasks build-cwebench build-cybergym build-sastben
 
 package:
 	@mkdir -p codebases
-	$(PY) -m sast_eval.tools.package_codebases --tasks $(TASKS) --out codebases
+	$(PY) -m sast_eval.tools.package_codebases --tasks $(TASKS) --out codebases \
+		$(if $(BENCHMARK),--benchmark $(BENCHMARK)) \
+		$(if $(LIMIT),--limit $(LIMIT))
 	@echo "=== Per-task tarballs in codebases/<benchmark>/<task_id>.tar.gz ==="
 
 # Build the 5 benchmarks' tasks and materialize all codebases as tar.gz files.

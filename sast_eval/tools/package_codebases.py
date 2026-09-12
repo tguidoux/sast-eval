@@ -180,22 +180,47 @@ def package_task(task: dict, out_dir: Path) -> dict:
 
 
 def main(argv: Iterable[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description="Build per-task .tar.gz codebases for SAST analysis")
+    ap = argparse.ArgumentParser(
+        description="Build per-task .tar.gz codebases for SAST analysis",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""\
+Examples:
+  sast-eval package                       # package all built tasks
+  sast-eval package --benchmark owasp     # only one benchmark
+  sast-eval package --limit 10            # first 10 tasks per benchmark
+  sast-eval package --benchmark owasp --limit 5
+""",
+    )
     ap.add_argument("--tasks", required=True, help="Directory of tasks/*.jsonl")
     ap.add_argument("--out", required=True, help="Output directory for codebases/")
+    ap.add_argument("--benchmark", "-b", default=None,
+                    help="Comma-separated benchmarks to package (e.g. owasp,cwebench). Default: all.")
+    ap.add_argument("--limit", type=int, default=None,
+                    help="Cap the number of tasks packaged per benchmark (quick test).")
     args = ap.parse_args(argv)
 
     tasks_dir = Path(args.tasks)
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    selected: set[str] | None = None
+    if args.benchmark:
+        selected = {b.strip() for b in args.benchmark.split(",") if b.strip()}
+
     manifest: list[dict] = []
     counts = {"ok": 0, "skipped": 0, "empty": 0}
     for jl in sorted(tasks_dir.glob("*.jsonl")):
+        bench = jl.stem  # e.g. "owasp" from "owasp.jsonl"
+        if selected is not None and bench not in selected:
+            continue
+        per_bench = 0
         for line in open(jl):
             line = line.strip()
             if not line:
                 continue
+            if args.limit is not None and per_bench >= args.limit:
+                break
+            per_bench += 1
             task = json.loads(line)
             e = package_task(task, out_dir)
             manifest.append(e)
