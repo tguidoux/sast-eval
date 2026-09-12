@@ -1,21 +1,25 @@
 # Makefile for the unified SAST evaluation harness.
 # Usage:
-#   make           - build all 5 benchmarks' tasks + materialize all codebases as tar.gz
+#   make           - prepare all codebases (download + build + fetch + package)
 #   make setup     - create/refresh the uv venv
-#   make fetch     - fetch source for bountytasks + CWE-Bench + CyberGym + SASTbench (needed before package)
+#   make prepare   - ONE command: download missing corpora + build tasks + fetch
+#                   source + package per-task tarballs. Default cap 20/benchmark.
+#                   filters: BENCHMARK=..., LIMIT=N, ALL=1
+#   make fetch     - fetch source for bountytasks + CWE-Bench + CyberGym + SASTbench
 #                   filters: BENCHMARK=..., LIMIT=N, CYBERGYM_LIMIT=N
 #   make build     - build all codebases into the common task format (tasks/*.jsonl)
+#                   filters: BENCHMARK=...
 #   make package   - build per-task .tar.gz codebases for SAST analysis (codebases/)
 #                   filters: BENCHMARK=..., LIMIT=N
 #   make match     - match SARIF results against ground truth (needs results/raw/<tool>/)
 #   make exploit   - run exploit-validation oracles on matched results (§10)
 #   make score     - render the scorecard from matched + exploit results
-#   make all       - build + fetch + package + match (empty) + exploit + score
+#   make all       - prepare + match (empty) + exploit + score
 #   make clean     - remove generated task/imported/results/reports/codebases artifacts
 #
 # The same operations are available as a pip-installed CLI:
 #   pip install sast-eval
-#   sast-eval build && sast-eval fetch && sast-eval package
+#   sast-eval prepare
 #   sast-eval match --tool mytool && sast-eval exploit --tool mytool && sast-eval score --tool mytool
 
 PY := uv run python
@@ -41,13 +45,21 @@ LIMIT ?=
 # Override: make fetch CYBERGYM_LIMIT=20  (empty = fetch all)
 CYBERGYM_LIMIT ?=
 
-# Default: build the 5 benchmarks' tasks and materialize all codebases as tar.gz
-.DEFAULT_GOAL := dist
+# prepare: ALL=1 removes the default 20/benchmark cap (fetch everything).
+ALL ?=
 
-.PHONY: setup fetch build build-owasp build-bountytasks build-cwebench build-cybergym build-sastbench package dist match exploit score all clean
+# Default: prepare all codebases (download + build + fetch + package).
+.DEFAULT_GOAL := prepare
+
+.PHONY: setup prepare fetch build build-owasp build-bountytasks build-cwebench build-cybergym build-sastbench package dist match exploit score all clean
 
 setup:
 	uv sync
+
+prepare:
+	$(CLI) prepare \
+		$(if $(BENCHMARK),--benchmark $(BENCHMARK)) \
+		$(if $(ALL),--all,$(if $(LIMIT),--limit $(LIMIT)))
 
 fetch:
 	$(PY) -m sast_eval.tools.fetch_sources \
@@ -73,9 +85,6 @@ package:
 	@echo "=== Per-task tarballs in codebases/<benchmark>/<task_id>.tar.gz ==="
 
 # Build the 5 benchmarks' tasks and materialize all codebases as tar.gz files.
-dist: build fetch package
-	@echo "=== Done: $(shell ls codebases/*/*.tar.gz | wc -l) tarballs in codebases/ ==="
-
 build-owasp:
 	@mkdir -p $(TASKS)
 	$(PY) -m sast_eval.adapters.owasp_adapter --root $(CORPUS)/BenchmarkJava --out $(TASKS)/owasp.jsonl
@@ -130,7 +139,7 @@ score:
 		--exploits $(RESULTS)/exploits \
 		--out $(REPORTS)/scorecard.md
 
-all: build fetch package
+all: prepare
 	@mkdir -p $(RESULTS)/raw/$(TOOL)
 	$(MAKE) match TOOL=$(TOOL)
 	$(MAKE) exploit TOOL=$(TOOL)

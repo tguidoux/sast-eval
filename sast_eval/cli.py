@@ -2,7 +2,9 @@
 
 Subcommands map to the existing module mains (each accepts ``argv: list[str]``):
 
-    sast-eval download   download benchmark corpora into corpus/ (Step 1)
+    sast-eval prepare     download + build + fetch + package (one command to
+                          produce standardized codebases; the usual entry point)
+    sast-eval download    download benchmark corpora into corpus/ (Step 1)
     sast-eval build       build all 5 benchmarks' tasks (tasks/*.jsonl)
     sast-eval fetch       fetch source for bountytasks/CWE-Bench/CyberGym/SASTbench
     sast-eval package     build per-task .tar.gz codebases for SAST analysis
@@ -78,27 +80,39 @@ def cmd_build(args: argparse.Namespace) -> int:
     rc = 0
     Path(args.tasks).mkdir(parents=True, exist_ok=True)
     Path(args.imported).mkdir(parents=True, exist_ok=True)
-    rc |= _build_one("sast_eval.adapters.owasp_adapter", "main",
-                     ["--root", str(Path(args.corpus) / "BenchmarkJava"), "--out", f"{args.tasks}/owasp.jsonl"],
-                     "owasp", Path(args.corpus) / "BenchmarkJava")
-    rc |= _build_one("sast_eval.importers.bountytasks_importer", "main",
-                     ["--metadata-root", str(Path(args.corpus) / "bountytasks"),
-                      "--tasks-out", f"{args.tasks}/bountytasks.jsonl",
-                      "--imported-out", f"{args.imported}/bountytasks.jsonl"],
-                     "bountytasks", Path(args.corpus) / "bountytasks")
-    rc |= _build_one("sast_eval.importers.cwebench_importer", "main",
-                     ["--root", str(Path(args.corpus) / "cwe-bench-java"),
-                      "--tasks-out", f"{args.tasks}/cwebench.jsonl",
-                      "--imported-out", f"{args.imported}/cwebench.jsonl"],
-                     "cwebench", Path(args.corpus) / "cwe-bench-java")
-    rc |= _build_one("sast_eval.importers.cybergym_importer", "main",
-                     ["--root", str(Path(args.corpus) / "cybergym"),
-                      "--tasks-out", f"{args.tasks}/cybergym.jsonl",
-                      "--imported-out", f"{args.imported}/cybergym.jsonl"],
-                     "cybergym", Path(args.corpus) / "cybergym")
-    rc |= _build_one("sast_eval.adapters.sastbench_adapter", "main",
-                     ["--root", str(Path(args.corpus) / "sast-bench"), "--out", f"{args.tasks}/sastbench.jsonl"],
-                     "sastbench", Path(args.corpus) / "sast-bench")
+    selected = None
+    if getattr(args, "benchmark", None):
+        selected = {b.strip() for b in args.benchmark.split(",") if b.strip()}
+
+    def _want(b: str) -> bool:
+        return selected is None or b in selected
+
+    if _want("owasp"):
+        rc |= _build_one("sast_eval.adapters.owasp_adapter", "main",
+                         ["--root", str(Path(args.corpus) / "BenchmarkJava"), "--out", f"{args.tasks}/owasp.jsonl"],
+                         "owasp", Path(args.corpus) / "BenchmarkJava")
+    if _want("bountytasks"):
+        rc |= _build_one("sast_eval.importers.bountytasks_importer", "main",
+                         ["--metadata-root", str(Path(args.corpus) / "bountytasks"),
+                          "--tasks-out", f"{args.tasks}/bountytasks.jsonl",
+                          "--imported-out", f"{args.imported}/bountytasks.jsonl"],
+                         "bountytasks", Path(args.corpus) / "bountytasks")
+    if _want("cwebench"):
+        rc |= _build_one("sast_eval.importers.cwebench_importer", "main",
+                         ["--root", str(Path(args.corpus) / "cwe-bench-java"),
+                          "--tasks-out", f"{args.tasks}/cwebench.jsonl",
+                          "--imported-out", f"{args.imported}/cwebench.jsonl"],
+                         "cwebench", Path(args.corpus) / "cwe-bench-java")
+    if _want("cybergym"):
+        rc |= _build_one("sast_eval.importers.cybergym_importer", "main",
+                         ["--root", str(Path(args.corpus) / "cybergym"),
+                          "--tasks-out", f"{args.tasks}/cybergym.jsonl",
+                          "--imported-out", f"{args.imported}/cybergym.jsonl"],
+                         "cybergym", Path(args.corpus) / "cybergym")
+    if _want("sastbench"):
+        rc |= _build_one("sast_eval.adapters.sastbench_adapter", "main",
+                         ["--root", str(Path(args.corpus) / "sast-bench"), "--out", f"{args.tasks}/sastbench.jsonl"],
+                         "sastbench", Path(args.corpus) / "sast-bench")
     return rc
 
 
@@ -110,7 +124,12 @@ def cmd_fetch(args: argparse.Namespace) -> int:
         "--sastbench", str(Path(args.corpus) / "sast-bench"),
     ]
     if args.benchmark:
-        argv += ["--benchmark", args.benchmark]
+        # fetch only handles these four; owasp is self-contained (no fetch step).
+        # Silently drop owasp so `prepare --benchmark owasp` doesn't error here.
+        fetch_benchmarks = [b.strip() for b in args.benchmark.split(",")
+                            if b.strip() in {"bountytasks", "cwebench", "cybergym", "sastbench"}]
+        if fetch_benchmarks:
+            argv += ["--benchmark", ",".join(fetch_benchmarks)]
     # --tasks-filter (explicit) takes precedence; otherwise use the --tasks dir
     # if it exists and contains jsonl files (so `sast-eval fetch` after `build`
     # automatically fetches only built tasks).
@@ -163,6 +182,59 @@ def cmd_score(args: argparse.Namespace) -> int:
     return _run("sast_eval.scoring.metrics", "main", argv)
 
 
+def cmd_prepare(args: argparse.Namespace) -> int:
+    """One command to produce standardized codebases: download (missing) →
+    build → fetch → package. ``--benchmark`` and ``--limit`` apply throughout.
+
+    By default caps each benchmark to 20 codebases so the command always
+    finishes fast; pass ``--all`` to remove the cap.
+    """
+    rc = 0
+    # Resolve the effective limit: --all wins, then --limit, then the safe default.
+    if args.all:
+        limit = None
+    elif args.limit is not None:
+        limit = args.limit
+    else:
+        limit = 20  # safe default so `prepare` always finishes quickly
+
+    # 1. Download any missing corpora (only what's absent; idempotent).
+    print("\n=== [1/4] download — fetch missing benchmark corpora ===")
+    dl_args = argparse.Namespace(**vars(args))
+    dl_args.benchmark = args.benchmark or "all"
+    dl_args.full = args.full
+    dl_args.force = False  # prepare never re-downloads; it only fills gaps
+    dl_args.cybergym_limit = limit
+    rc |= cmd_download(dl_args)
+
+    # 2. Build task records from the corpora.
+    print("\n=== [2/4] build — normalize corpora into tasks/*.jsonl ===")
+    rc |= cmd_build(args)
+
+    # 3. Fetch source trees for the built tasks (capped by `limit`).
+    print("\n=== [3/4] fetch — clone source trees for built tasks ===")
+    fetch_args = argparse.Namespace(**vars(args))
+    fetch_args.benchmark = args.benchmark
+    fetch_args.tasks_filter = args.tasks  # only fetch codebases referenced by built tasks
+    fetch_args.limit = limit
+    fetch_args.cybergym_limit = limit
+    rc |= cmd_fetch(fetch_args)
+
+    # 4. Package per-task .tar.gz codebases (capped by `limit`).
+    print("\n=== [4/4] package — build per-task .tar.gz codebases ===")
+    pkg_args = argparse.Namespace(**vars(args))
+    pkg_args.benchmark = args.benchmark
+    pkg_args.limit = limit
+    rc |= cmd_package(pkg_args)
+
+    print("\n=== prepare done ===")
+    print(f"  tasks/        {sum(1 for _ in Path(args.tasks).glob('*.jsonl'))} benchmark records")
+    print(f"  codebases/    {len(list(Path(args.codebases).rglob('*.tar.gz')))} tarballs")
+    if not args.all and limit is not None:
+        print(f"  (capped at {limit} per benchmark — pass --all for everything)")
+    return rc
+
+
 def cmd_all(args: argparse.Namespace) -> int:
     rc = cmd_download(args)
     rc |= cmd_build(args)
@@ -195,9 +267,42 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Cap CyberGym task tarballs downloaded (full dataset is ~240GB)")
     p.set_defaults(func=cmd_download)
 
+    # prepare — the one command that produces standardized codebases
+    p = sub.add_parser("prepare", help="Download + build + fetch + package in one command",
+                       formatter_class=argparse.RawDescriptionHelpFormatter,
+                       epilog="""\
+Produces standardized per-task .tar.gz codebases from the benchmark corpora.
+Does whatever is required: downloads missing corpora, builds task records,
+fetches source trees, and packages tarballs.
+
+By default caps each benchmark to 20 codebases so the command always finishes
+fast. Pass --all to remove the cap (fetches every codebase — CyberGym is ~240GB,
+SASTbench Full Track is 189 real-world repos).
+
+Examples:
+  sast-eval prepare                         # fast: all benchmarks, 20 each
+  sast-eval prepare --all                   # everything (slow)
+  sast-eval prepare --benchmark owasp        # only OWASP
+  sast-eval prepare --benchmark cybergym --limit 5
+""")
+    _add_corpus_args(p)
+    p.add_argument("--benchmark", "-b", default=None,
+                   help="Comma-separated benchmarks to prepare "
+                        "(owasp,bountytasks,cwebench,cybergym,sastbench). Default: all.")
+    p.add_argument("--limit", type=int, default=None,
+                   help="Cap codebases per benchmark (default: 20; --all removes the cap).")
+    p.add_argument("--all", action="store_true",
+                   help="Prepare every codebase (no cap). Slow for CyberGym/SASTbench.")
+    p.add_argument("--full", action="store_true",
+                   help="Full git history when downloading corpora (default: shallow).")
+    p.set_defaults(func=cmd_prepare)
+
     # build
     p = sub.add_parser("build", help="Build all 5 benchmarks' tasks (tasks/*.jsonl)")
     _add_corpus_args(p)
+    p.add_argument("--benchmark", "-b", default=None,
+                   help="Comma-separated benchmarks to build "
+                        "(owasp,bountytasks,cwebench,cybergym,sastbench). Default: all.")
     p.set_defaults(func=cmd_build)
 
     # fetch

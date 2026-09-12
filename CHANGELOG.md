@@ -5,6 +5,31 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.3] - 2026-09-12
+
+### Added
+
+- **`sast-eval prepare`** — a single command that does everything required to
+  get codebases ready: download missing corpora → build task records
+  (`tasks/*.jsonl`) → fetch source trees → package per-task `.tar.gz` tarballs.
+  This replaces the previous `build && fetch && package` three-command flow.
+  - Defaults to a safe cap of 20 codebases per benchmark so it always finishes
+    fast; pass `--all` to remove the cap (slow: CyberGym is ~240GB, SASTbench
+    Full Track is 189 real-world repos).
+  - `--benchmark` and `--limit` apply to all four steps, so you can prepare a
+    subset: `sast-eval prepare --benchmark owasp --limit 5`.
+  - `make prepare` (the new default `make` target) wraps it with `BENCHMARK=`,
+    `LIMIT=`, and `ALL=1` knobs.
+
+### Changed
+
+- **`sast-eval build` now respects `--benchmark`** — previously `build` always
+  ran all five adapters; now `build --benchmark owasp` only builds OWASP. This
+  makes `prepare --benchmark X` consistent across all steps.
+- **`sast-eval fetch` tolerates `owasp` in `--benchmark`** — OWASP is
+  self-contained (already checked out, no fetch step), so `prepare
+  --benchmark owasp` no longer errors.
+
 ## [0.1.2] - 2026-09-12
 
 ### Added

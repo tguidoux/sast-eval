@@ -35,29 +35,40 @@ With a plain `pip install` (no `uv`), `sast-eval` is on your PATH directly:
 sast-eval --help
 ```
 
-You should see seven subcommands: `build`, `fetch`, `package`, `match`,
-`exploit`, `score`, `all`. (The examples below use the bare `sast-eval` form —
-add `uv run ` in front if you installed with `uv`.)
+You should see eight subcommands: `prepare`, `build`, `fetch`, `package`,
+`match`, `exploit`, `score`, `all`. `prepare` is the front door — it does
+everything needed to get codebases ready in one step. (The examples below use
+the bare `sast-eval` form — add `uv run ` in front if you installed with `uv`.)
 
 ---
 
-## 2. Build the ground-truth tasks
+## 2. Prepare codebases (one command)
 
-This normalizes all five benchmarks into a single task schema (`tasks/*.jsonl`):
+`prepare` is the single command that gets all codebases ready. It runs the
+full download → build → fetch → package pipeline, defaulting to a safe cap of
+20 codebases per benchmark so it always finishes fast:
 
 ```bash
-sast-eval build
+sast-eval prepare                       # all benchmarks, 20 codebases each (fast)
+sast-eval prepare --all                 # everything (slow: CyberGym ~240GB)
+sast-eval prepare --benchmark owasp      # only OWASP
+sast-eval prepare --benchmark cybergym --limit 5
 ```
 
-Expected output:
+What `prepare` does, in order:
 
-```
-Wrote 2740 OWASP task records to tasks/owasp.jsonl
-Wrote 46 bountytasks task records to tasks/bountytasks.jsonl
-Wrote 120 CWE-Bench task records to tasks/cwebench.jsonl
-Wrote 1507 CyberGym task records to tasks/cybergym.jsonl
-Wrote 206 SASTbench task records to tasks/sastbench.jsonl
-```
+1. **download** — fetches any missing corpus data (CyberGym from HuggingFace,
+   SASTbench Full Track repos). Already-present corpora are skipped.
+2. **build** — normalizes all five benchmarks into a single task schema
+   (`tasks/*.jsonl`).
+3. **fetch** — clones each codebase at the vulnerable/buggy commit (for
+   bountytasks, CWE-Bench, CyberGym, SASTbench Full Track). OWASP and SASTbench
+   Core Track are already checked out.
+4. **package** — builds one `.tar.gz` per task at
+   `codebases/<benchmark>/<task_id>.tar.gz`.
+
+The `--benchmark` and `--limit` flags apply to all four steps. Use `--all` to
+remove the default cap (slow for CyberGym / SASTbench Full Track).
 
 Each line in `tasks/<bench>.jsonl` is one task. A task record tells you **what
 to analyze** (`source_root`) and **what the ground truth is** (`ground_truth`).
@@ -80,22 +91,22 @@ For example, an OWASP task:
 }
 ```
 
----
+This produces `codebases/<benchmark>/<task_id with / → __>.tar.gz` plus a
+`codebases/MANIFEST.json` listing every tarball, its file count, and byte size.
+Point your tool at each tarball (or at `source_root` directly — either works).
 
-## 3. (Optional) Materialize per-task source tarballs
+<details>
+<summary>Advanced: running the steps individually</summary>
 
-If your SAST tool analyzes self-contained source trees rather than a full repo,
-build one `.tar.gz` per task:
+`prepare` runs download → build → fetch → package. If you need finer control,
+the individual subcommands are still available with the same `--benchmark` /
+`--limit` filters:
 
 ```bash
-# Fastest: build tasks first, then fetch only the codebases they reference.
-sast-eval build
-sast-eval fetch --tasks-filter tasks --limit 5   # only built tasks, capped at 5/benchmark
-sast-eval package --limit 5                      # → codebases/<bench>/<task_id>.tar.gz
+sast-eval build                          # tasks/*.jsonl only
+sast-eval fetch --tasks-filter tasks --limit 5   # only built tasks, capped
+sast-eval package --limit 5              # → codebases/<bench>/<task_id>.tar.gz
 ```
-
-Fetching every codebase is slow (120 CWE-Bench repos, 189 SASTbench Full Track
-repos, CyberGym's ~240GB dataset). The filters keep it tractable:
 
 | Flag | What it does |
 |------|-------------|
@@ -106,9 +117,7 @@ repos, CyberGym's ~240GB dataset). The filters keep it tractable:
 `fetch` is idempotent — already-fetched codebases are skipped, so you can re-run
 it as you add tasks. `package` accepts the same `--benchmark`/`--limit` flags.
 
-This produces `codebases/<benchmark>/<task_id with / → __>.tar.gz` plus a
-`codebases/MANIFEST.json` listing every tarball, its file count, and byte size.
-Point your tool at each tarball (or at `source_root` directly — either works).
+</details>
 
 ---
 

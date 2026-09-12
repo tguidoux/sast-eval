@@ -2,4 +2,4 @@
 
 Public entry point: ``sast_eval.cli:main`` (the ``sast-eval`` console script).
 """
-__version__ = "0.1.2"
+__version__ = "0.1.3"

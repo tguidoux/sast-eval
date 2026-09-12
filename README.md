@@ -107,49 +107,35 @@ ls corpus/  # bountytasks  BenchmarkJava  cwe-bench-java  cybergym  sast-bench
 # 1. Setup (creates a uv venv and installs the sast-eval package)
 make setup            # or: uv sync
 
-# 2. Build all codebases into the common task format (tasks/*.jsonl)
-sast-eval build       # or: make build
-
-# 3. Fetch source for bountytasks + CWE-Bench + CyberGym + SASTbench (needed before package)
-#    Clones each codebase at the vulnerable/buggy commit; downloads CyberGym
-#    per-task data from HuggingFace; clones SASTbench Full Track real-world repos.
-#    OWASP + SASTbench Core Track are already checked out.
+# 2. Prepare standardized codebases in ONE command.
+#    `prepare` does everything required: downloads missing corpora, builds
+#    task records (tasks/*.jsonl), fetches source trees, and packages per-task
+#    .tar.gz codebases (codebases/<benchmark>/<task_id>.tar.gz).
 #
-#    Fetching ALL codebases is slow (120 CWE-Bench repos, 189 SASTbench Full
-#    Track repos, CyberGym's ~240GB dataset). Three filters make it tractable:
-#
-#      --benchmark bountytasks,cwebench   # only these benchmarks
-#      --tasks-filter tasks               # only codebases referenced by tasks/*.jsonl
-#      --limit 5                          # cap each benchmark to 5 codebases
-#
-#    The fastest path for a quick test: build first, then fetch only what you built:
-sast-eval fetch --tasks-filter tasks --limit 5
-#    Or fetch everything for a specific benchmark:
-sast-eval fetch --benchmark bountytasks
-# or: make fetch BENCHMARK=bountytasks LIMIT=5
+#    By default it caps each benchmark to 20 codebases so it always finishes
+#    fast. Pass --all for everything (slow: CyberGym is ~240GB, SASTbench
+#    Full Track is 189 real-world repos).
+sast-eval prepare                       # fast: all benchmarks, 20 codebases each
+sast-eval prepare --all                 # everything (slow)
+sast-eval prepare --benchmark owasp      # only OWASP
+sast-eval prepare --benchmark cybergym --limit 5
+# or: make prepare BENCHMARK=owasp LIMIT=5
 
-# 4. Build per-task .tar.gz codebases for SAST analysis
-#    codebases/<benchmark>/<task_id>.tar.gz  (self-contained source per task)
-#    Same filters as fetch (--benchmark, --limit) let you package a subset:
-sast-eval package                        # all built tasks
-sast-eval package --benchmark owasp --limit 10   # first 10 OWASP tarballs
-# or: make package BENCHMARK=owasp LIMIT=10
-
-# 5. Run your SAST tool over each task's source_root, emit SARIF v2.1.0 to:
+# 3. Run your SAST tool over each task's source_root, emit SARIF v2.1.0 to:
 #    results/raw/<tool>/<task_id with / → __>.sarif
 #    Map the tool's ruleIds to CWEs via tools/<tool>/rules.json.
-#    (Or analyze the per-task tarballs from `sast-eval package`.)
+#    (Or analyze the per-task tarballs from `sast-eval prepare`.)
 
-# 6. Match findings against ground truth (§5)
+# 4. Match findings against ground truth (§5)
 sast-eval match --tool <tool>      # or: make match TOOL=<tool>
 
-# 7. Run exploit-validation oracles on matched results (§10)
+# 5. Run exploit-validation oracles on matched results (§10)
 sast-eval exploit --tool <tool>    # or: make exploit TOOL=<tool>
 
-# 8. Score + report (§6, includes exploit-validation section)
+# 6. Score + report (§6, includes exploit-validation section)
 sast-eval score --tool <tool>      # or: make score TOOL=<tool>
 
-# Or: build + fetch + package + match (empty results) + exploit + score in one go
+# Or: prepare + match (empty results) + exploit + score in one go
 sast-eval all --tool <tool>        # or: make all TOOL=<tool>
 ```
 
