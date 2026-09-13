@@ -1,0 +1,17 @@
+[project]
+name = "llm-sast-e2e"
+version = "0.1.0"
+description = "End-to-end example: a toy LLM-based SAST tool benchmarked with sast-eval"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "sast-eval>=0.1.5",
+]
+
+[tool.uv]
+package = true
+
+# Use the in-repo sast-eval so the example tracks the latest harness code.
+# To test against a published PyPI version instead, comment out the next 3 lines.
+[tool.uv.sources]
+sast-eval = { path = "../../", editable = true }

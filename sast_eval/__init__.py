@@ -15,7 +15,20 @@ the same code paths the CLI uses::
         run.match(); run.exploit(); run.score()
 """
 from sast_eval.api import SastEval, Codebase, ResultRun
+from sast_eval.sarif_contract import validate_sarif, validate_file, SarifReport
+from sast_eval.poc import (
+    PoCSpec, PoCResult, PoCIssue, run_poc,
+    validate_poc, validate_file as validate_poc_file,
+    Sandbox, LocalSandbox, REFERENCE_POC,
+)
 
-__version__ = "0.1.5"
+__version__ = "0.2.0"
 
-__all__ = ["SastEval", "Codebase", "ResultRun", "__version__"]
+__all__ = [
+    "SastEval", "Codebase", "ResultRun",
+    "validate_sarif", "validate_file", "SarifReport",
+    "PoCSpec", "PoCResult", "PoCIssue", "run_poc",
+    "validate_poc", "validate_poc_file", "Sandbox", "LocalSandbox",
+    "REFERENCE_POC",
+    "__version__",
+]

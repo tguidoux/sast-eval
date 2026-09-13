@@ -59,6 +59,31 @@ def _run(module: str, func: str, argv: list[str]) -> int:
     return fn(argv)
 
 
+def _inject_poc_dir(tasks_dir: str, poc_dir: str) -> None:
+    """Set ``meta.poc_dir`` on every task record in ``tasks_dir/*.jsonl``.
+
+    The generic PoC oracle (Tier 3) reads ``task.meta.poc_dir`` to find PoC
+    specs. We inject it in-place so the oracle CLI picks it up without a
+    ``--pocs`` flag.
+    """
+    tasks_path = Path(tasks_dir)
+    if not tasks_path.is_dir():
+        return
+    for p in sorted(tasks_path.glob("*.jsonl")):
+        lines: list[str] = []
+        with open(p, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    lines.append("")
+                    continue
+                t = json.loads(line)
+                t.setdefault("meta", {})["poc_dir"] = poc_dir
+                lines.append(json.dumps(t, ensure_ascii=False))
+        with open(p, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+
+
 class SastEval:
     """Configuration object holding the same defaults as the CLI.
 
@@ -419,10 +444,47 @@ class ResultRun:
         self.raw_dir = Path(owner.results_dir) / "raw" / tool
         self.matched_dir = Path(owner.results_dir) / "matched" / tool
         self.exploits_dir = Path(owner.results_dir) / "exploits" / tool
+        self.poc_dir = Path(owner.results_dir) / "pocs" / tool
         self.raw_dir.mkdir(parents=True, exist_ok=True)
 
     def _sarif_name(self, task_id: str) -> str:
         return task_id.replace("/", "__") + ".sarif"
+
+    def _poc_name(self, task_id: str) -> str:
+        return task_id.replace("/", "__") + ".poc.json"
+
+    def save_poc(self, poc: dict | str | Path, task_id: str) -> Path:
+        """Save a PoC spec for ``task_id`` to ``results/pocs/<tool>/<task_id>.poc.json``.
+
+        Accepts a PoC spec ``dict``, a JSON string, or a path to an existing
+        ``.poc.json`` file (copied, streamed). Returns the written path.
+
+        The exploit-validation oracle picks up specs from this directory
+        automatically — no extra wiring needed.
+        """
+        self.poc_dir.mkdir(parents=True, exist_ok=True)
+        out = self.poc_dir / self._poc_name(task_id)
+        if isinstance(poc, dict):
+            with open(out, "w", encoding="utf-8") as f:
+                json.dump(poc, f, ensure_ascii=False, indent=2)
+        elif isinstance(poc, str) and not poc.strip().startswith("{"):
+            src = Path(poc)
+            if not src.is_file():
+                raise FileNotFoundError(f"PoC spec file not found: {src}")
+            with open(src, "rb") as f_in, open(out, "wb") as f_out:
+                shutil.copyfileobj(f_in, f_out, length=64 * 1024)
+        elif isinstance(poc, str):
+            with open(out, "w", encoding="utf-8") as f:
+                f.write(poc)
+        elif isinstance(poc, Path):
+            src = poc
+            if not src.is_file():
+                raise FileNotFoundError(f"PoC spec file not found: {src}")
+            with open(src, "rb") as f_in, open(out, "wb") as f_out:
+                shutil.copyfileobj(f_in, f_out, length=64 * 1024)
+        else:
+            raise TypeError(f"poc must be dict | str | Path, got {type(poc).__name__}")
+        return out
 
     def save_sarif(self, sarif: dict | str | Path, task_id: str) -> Path:
         """Save SARIF for ``task_id`` to ``results/raw/<tool>/<task_id>.sarif``.
@@ -471,8 +533,16 @@ class ResultRun:
         return self.matched_dir
 
     def exploit(self) -> Path:
-        """Run exploit-validation oracles on matched results → ``results/exploits/<tool>/``."""
+        """Run exploit-validation oracles on matched results → ``results/exploits/<tool>/``.
+
+        If PoC specs were saved via :meth:`save_poc`, their directory is injected
+        into each task's ``meta.poc_dir`` so the generic PoC oracle (Tier 3)
+        picks them up.
+        """
         self.exploits_dir.mkdir(parents=True, exist_ok=True)
+        # Inject poc_dir into task records so the PoC oracle finds specs.
+        if self.poc_dir.is_dir():
+            _inject_poc_dir(self._owner.tasks, str(self.poc_dir))
         _run("sast_eval.exploit.oracle", "main", [
             "--matched", str(self.matched_dir),
             "--tasks", self._owner.tasks,

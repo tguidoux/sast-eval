@@ -2,7 +2,9 @@
 
 | Document | What it covers |
 |---|---|
-| [QUICKSTART.md](QUICKSTART.md) | End-to-end walkthrough with runnable examples — install, build, run the example tool, plug in your own SAST. Start here. |
+| [CONTRACT.md](CONTRACT.md) | **What a SAST tool must produce to be benchmarked**: the detect leg (SARIF, 4 fields) and the exploit leg (PoC spec). Start here if you're a tool author. |
+| [../examples/llm-sast-e2e/](../examples/llm-sast-e2e/) | A runnable end-to-end example: a toy LLM SAST tool that emits SARIF + PoC specs and gets scored on both legs. |
+| [QUICKSTART.md](QUICKSTART.md) | End-to-end walkthrough with runnable examples — install, build, run the example tool, plug in your own SAST. |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Pipeline, module ownership, the unified task schema, matching rules, scorecard structure. |
 | [SCORING.md](SCORING.md) | How findings are classified (TP/FP/FN), metric definitions (recall, precision, F1, FPR, score), per-benchmark metrics, caveats. |
 | [EXPLOIT_VALIDATION.md](EXPLOIT_VALIDATION.md) | The 4-tier exploit-validation oracle (§10): Tier 0 static → Tier 1 reachability → Tier 2 canary → Tier 3 full exploit, outcome buckets, per-benchmark oracle availability, confirmed-precision metric. |

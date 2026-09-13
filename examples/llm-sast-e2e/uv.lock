@@ -1,0 +1,19 @@
+version = 1
+revision = 3
+requires-python = ">=3.10"
+
+[[package]]
+name = "llm-sast-e2e"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "sast-eval" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "sast-eval", editable = "../../" }]
+
+[[package]]
+name = "sast-eval"
+version = "0.1.5"
+source = { editable = "../../" }

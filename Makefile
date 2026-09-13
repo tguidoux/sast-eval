@@ -58,6 +58,10 @@ setup:
 
 test:
 	$(PY) test/test_api.py
+	$(PY) test/test_exploit_oracle.py
+	$(PY) test/test_sarif_contract.py
+	$(PY) test/test_poc_contract.py
+	$(PY) test/test_poc_oracle.py
 
 prepare:
 	$(CLI) prepare \

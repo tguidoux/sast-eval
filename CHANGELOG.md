@@ -5,6 +5,69 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-09-13
+
+### Added
+
+- **Exploit leg (Tier 3 PoC contract).** Tools can now emit a declarative PoC
+  spec per finding that the harness runs in a sandbox and judges — the tool
+  never self-certifies. The spec declares an `executor` (`http-request`,
+  `cli-stdin`, `file-read`, `grpc-call`, `custom-script`), an `invoke` block,
+  and a `success` criterion (`response-body-contains`, `exit-code`,
+  `file-exists`, `file-contains`, etc.). The harness dispatches to the
+  executor, runs it in a `Sandbox`, and applies `judge()` — the trust boundary.
+  - `from sast_eval.poc import PoCSpec, run_poc, validate_poc, LocalSandbox,
+    REFERENCE_POC` — public API for the exploit leg.
+  - `sast-eval validate-poc` and `sast-eval run-poc` CLI commands to validate
+    and dry-run PoC specs.
+  - Generic Tier 3 oracle (`sast_eval.exploit.oracles.poc_oracle`) registered
+    under `"*"` — looks up `<task_id>.poc.json` in the poc dir, runs it, sets
+    `exploit_attempted`/`exploit_passed` on each `FindingVerdict`.
+
+- **SARIF contract validation.** `sast_eval.sarif_contract` validates the 4
+  required fields per finding (`ruleId`, `message.text`, `locations[].uri`,
+  `locations[].startLine`) and the `properties.tags` CWE convention.
+  - `from sast_eval import validate_sarif, validate_file, SarifReport`.
+  - `sast-eval validate-sarif` CLI command.
+
+- **OWASP Tier 2 canary oracle.** A static taint check from the servlet entry
+  point (`doGet`/`doPost`) to the vulnerable sink per CWE — deterministic,
+  no-runtime confirmation that tainted input reaches the vulnerable operation.
+  Replaces the generic "file is in src tree" heuristic with a real reachability
+  check that's still static and fast.
+
+- **`ResultRun.save_poc()`** — programmatic API to write a PoC spec to
+  `results/pocs/<tool>/<task_id>.poc.json`. Mirrors `save_sarif`. The
+  `exploit()` method injects the poc dir into task records so the generic
+  oracle finds the specs.
+
+- **`docs/CONTRACT.md`** — consolidated detect + exploit contract for tool
+  authors. Makes the trust boundary explicit: "the tool claims (SARIF) and
+  proposes a recipe (PoC); the harness proves (runs + judges)."
+
+- **`examples/llm-sast-e2e/`** — a standalone uv project demonstrating the
+  full contract with a toy LLM SAST (regex heuristics emitting SARIF + PoC
+  specs). Shows detect scoring (precision, recall) and exploit scoring (the
+  tier ladder: static → canary → PoC) for 3 OWASP codebases.
+
+- Test suites for the new contract: `test_sarif_contract.py` (12),
+  `test_poc_contract.py` (27), `test_poc_oracle.py` (3), `test_exploit_oracle.py` (6).
+
+### Changed
+
+- `sast_eval.exploit.oracle.validate_task` now runs all tiers in sequence
+  (Tier 1 → 2 → 3) and resolves the outcome as the highest tier that ran.
+  `_highest_tier` and `_resolve_outcome` pick the verdict per finding.
+
+- `sast_eval.exploit.oracles.__init__` now imports and registers the OWASP
+  canary and generic PoC oracles alongside the existing bountytasks/cybergym
+  oracles.
+
+### Fixed
+
+- The exploit leg now reliably evaluates across all benchmarks: OWASP via
+  the Tier 2 canary, others via the Tier 3 PoC oracle (generic `*` fallback).
+
 ## [0.1.5] - 2026-09-12
 
 ### Changed

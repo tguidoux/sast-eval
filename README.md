@@ -125,6 +125,9 @@ sast-eval prepare --benchmark cybergym --limit 5
 #    results/raw/<tool>/<task_id with / → __>.sarif
 #    Map the tool's ruleIds to CWEs via tools/<tool>/rules.json.
 #    (Or analyze the per-task tarballs from `sast-eval prepare`.)
+#    Validate your SARIF first:  sast-eval validate-sarif results/raw/<tool>/
+#    Validate your PoC specs:    sast-eval validate-poc pocs/<tool>/
+#    See docs/CONTRACT.md for the full detect + exploit contract.
 
 # 4. Match findings against ground truth (§5)
 sast-eval match --tool <tool>      # or: make match TOOL=<tool>

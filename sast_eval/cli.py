@@ -12,6 +12,9 @@ API run the exact same code, so behavior is identical.
     sast-eval match       match SARIF results against ground truth
     sast-eval exploit     run exploit-validation oracles on matched results
     sast-eval score       render the scorecard from matched + exploit results
+    sast-eval validate-sarif  check a SARIF file against the harness contract
+    sast-eval validate-poc    check a PoC spec against the harness contract
+    sast-eval run-poc         run a PoC spec against a codebase and report the result
     sast-eval all         download + build + fetch + package + match + exploit + score
 
 Run ``sast-eval <subcommand> --help`` for per-subcommand options.
@@ -19,6 +22,7 @@ Run ``sast-eval <subcommand> --help`` for per-subcommand options.
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -120,6 +124,114 @@ def cmd_prepare(args: argparse.Namespace) -> int:
         limit = 20  # safe default so `prepare` always finishes quickly
     sast = _sast_from_args(args, limit=limit)
     return sast.prepare(full=args.full, all_=args.all)
+
+
+def cmd_validate_sarif(args: argparse.Namespace) -> int:
+    """Validate a SARIF file (or every .sarif in a dir) against the sast-eval
+    contract. Lets a SAST tool author check their output before running the
+    full eval."""
+    from sast_eval.sarif_contract import validate_file, validate_sarif, REFERENCE_SARIF
+
+    if args.reference:
+        # Emit the reference fixture to stdout and validate it (self-check).
+        print(json.dumps(REFERENCE_SARIF, indent=2))
+        return 0
+
+    targets: list[Path] = []
+    for a in args.files:
+        p = Path(a)
+        if p.is_dir():
+            targets.extend(sorted(p.rglob("*.sarif")))
+        else:
+            targets.append(p)
+
+    if not targets:
+        print("validate-sarif: no SARIF files found", file=sys.stderr)
+        return 2
+
+    rc = 0
+    for t in targets:
+        rep = validate_file(t)
+        status = "✓" if rep.valid else "✗"
+        print(f"{status} {t}  ({rep.finding_count} findings, {rep.rule_count} rules)")
+        for iss in rep.issues:
+            tag = "ERROR" if iss.code in ("not-object", "no-runs", "invalid-json", "unreadable") else "WARN"
+            print(f"    [{tag}] {iss.code}: {iss.message}")
+            if iss.path:
+                print(f"        at {iss.path}")
+        if not rep.valid:
+            rc = 1
+    return rc
+
+
+def cmd_validate_poc(args: argparse.Namespace) -> int:
+    """Validate a PoC spec (or every .poc.json in a dir) against the contract."""
+    from sast_eval.poc import validate_file as validate_poc_file, REFERENCE_POC
+
+    if args.reference:
+        print(json.dumps(REFERENCE_POC, indent=2))
+        return 0
+
+    targets: list[Path] = []
+    for a in args.files:
+        p = Path(a)
+        if p.is_dir():
+            targets.extend(sorted(p.rglob("*.poc.json")))
+            targets.extend(sorted(p.rglob("*.poc")))
+        else:
+            targets.append(p)
+
+    if not targets:
+        print("validate-poc: no PoC spec files found", file=sys.stderr)
+        return 2
+
+    rc = 0
+    for t in targets:
+        valid, issues, _ = validate_poc_file(t)
+        status = "✓" if valid else "✗"
+        print(f"{status} {t}")
+        for iss in issues:
+            tag = "ERROR" if iss.severity == "error" else "WARN"
+            print(f"    [{tag}] {iss.code}: {iss.message}")
+        if not valid:
+            rc = 1
+    return rc
+
+
+def cmd_run_poc(args: argparse.Namespace) -> int:
+    """Run a single PoC spec against a codebase dir and report the result."""
+    import json as _json
+    from sast_eval.poc import run_poc, LocalSandbox
+    from sast_eval.poc.spec import from_dict
+
+    spec_path = Path(args.spec)
+    try:
+        spec_dict = _json.loads(spec_path.read_text(encoding="utf-8"))
+    except (OSError, _json.JSONDecodeError) as e:
+        print(f"run-poc: cannot read spec {spec_path}: {e}", file=sys.stderr)
+        return 2
+
+    codebase_dir = Path(args.codebase)
+    if not codebase_dir.is_dir():
+        print(f"run-poc: codebase dir not found: {codebase_dir}", file=sys.stderr)
+        return 2
+
+    sandbox = LocalSandbox(workdir=codebase_dir.parent / ".sandbox")
+    try:
+        result = run_poc(spec_dict, codebase_dir, sandbox)
+    finally:
+        sandbox.teardown()
+
+    out = {
+        "attempted": result.attempted,
+        "passed": result.passed,
+        "exit_code": result.exit_code,
+        "duration_s": round(result.duration_s, 3),
+        "error": result.error,
+        "output": result.output[:4000],
+    }
+    print(_json.dumps(out, indent=2, ensure_ascii=False))
+    return 0 if result.passed else 1
 
 
 def cmd_all(args: argparse.Namespace) -> int:
@@ -251,6 +363,61 @@ Examples:
     _add_corpus_args(p)
     p.add_argument("--tool", required=True, help="Tool name (results/matched/<tool>/)")
     p.set_defaults(func=cmd_score)
+
+    # validate-sarif — let tool authors check their output before running the eval
+    p = sub.add_parser("validate-sarif",
+                       help="Validate a SARIF file against the sast-eval contract",
+                       formatter_class=argparse.RawDescriptionHelpFormatter,
+                       epilog="""\
+Checks that a SARIF v2.1.0 doc has the minimal structure the harness reads:
+  - runs[].results[].ruleId
+  - runs[].tool.driver.rules[].id with properties.tags including "CWE-<n>"
+  - runs[].results[].locations[0].physicalLocation.artifactLocation.uri
+  - runs[].results[].locations[0].physicalLocation.region.startLine (recommended)
+
+Examples:
+  sast-eval validate-sarif results/raw/mytool/owasp__BenchmarkTest00001.sarif
+  sast-eval validate-sarif results/raw/mytool/   # validate every .sarif in a dir
+  sast-eval validate-sarif --reference           # print a reference fixture to stdout
+""")
+    p.add_argument("files", nargs="*", help="SARIF file(s) or a directory of .sarif files")
+    p.add_argument("--reference", action="store_true",
+                   help="Print a reference SARIF fixture to stdout and exit")
+    p.set_defaults(func=cmd_validate_sarif)
+
+    # validate-poc — let tool authors check their PoC spec before running it
+    p = sub.add_parser("validate-poc",
+                       help="Validate a PoC spec against the sast-eval contract",
+                       formatter_class=argparse.RawDescriptionHelpFormatter,
+                       epilog="""\
+Checks that a PoC spec declares a known executor, an invoke block, and a
+known success kind. Errors make the spec unusable; warnings (missing task_id,
+missing finding fields) do not.
+
+Examples:
+  sast-eval validate-poc poc.json
+  sast-eval validate-poc pocs/          # validate every .poc.json in a dir
+  sast-eval validate-poc --reference   # print a reference PoC to stdout
+""")
+    p.add_argument("files", nargs="*", help="PoC spec file(s) or a directory of .poc.json files")
+    p.add_argument("--reference", action="store_true",
+                   help="Print a reference PoC fixture to stdout and exit")
+    p.set_defaults(func=cmd_validate_poc)
+
+    # run-poc — run a single PoC end-to-end against a codebase dir
+    p = sub.add_parser("run-poc",
+                       help="Run a PoC spec against a codebase and report the result",
+                       formatter_class=argparse.RawDescriptionHelpFormatter,
+                       epilog="""\
+Runs the PoC in a local sandbox (for testing). In production, use the
+programmatic API with a Docker/gVisor-backed sandbox.
+
+Examples:
+  sast-eval run-poc poc.json codebases/owasp__BenchmarkTest00001/
+""")
+    p.add_argument("spec", help="PoC spec file (.poc.json)")
+    p.add_argument("codebase", help="Extracted codebase directory to run the PoC against")
+    p.set_defaults(func=cmd_run_poc)
 
     # all
     p = sub.add_parser("all", help="download + build + fetch + package + match + exploit + score")
